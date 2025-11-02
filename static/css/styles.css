@@ -226,6 +226,10 @@ body {
 
 /* Mobile Landscape - One chart fits well, tomorrow chart lurks at bottom */
 @media screen and (max-width: 900px) and (orientation: landscape) {
+    body {
+        display: flex;
+        flex-direction: column;
+    }
     .app-header {
         padding: 4px 8px;
         font-size: 12px;
@@ -268,11 +272,15 @@ body {
         height: 16px;
     }
     .charts {
+        flex: 1;
+        display: grid;
         grid-template-columns: 1fr; /* Always stacked on mobile */
+        align-content: center;
         gap: 8px; /* Normal gap between charts */
         padding: 4px;
         height: auto; /* Allow scrolling to see second chart */
-        min-height: calc(100vh + 40vh); /* Extra height to accommodate both charts */
+        min-height: 0;
+        overflow-y: auto; /* Allow scrolling if content is taller */
     }
 
     /* Today's chart - takes most of the screen */
@@ -318,10 +326,15 @@ body {
 
 /* Tablets and Desktop (side-by-side layout) */
 @media screen and (min-width: 901px) {
+    body {
+        display: flex;
+        flex-direction: column;
+    }
     .app-header {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 4px;
+        flex-shrink: 0;
     }
     .header-left {
         display: flex;
@@ -341,14 +354,22 @@ body {
         justify-content: flex-end;
     }
     .charts {
+        flex: 1;
+        display: grid;
         grid-template-columns: 1fr 1fr; /* Side-by-side on tablets and desktop */
+        align-content: center;
+        justify-content: center;
         gap: 4px;
         padding: 4px;
-        height: calc(100vh - 50px);
+        height: auto;
+        min-height: 0;
         padding-bottom: 50px; /* Increase bottom padding significantly for x-axis labels */
     }
     .chart-body {
-        height: calc(100vh - 180px); /* Leave much more space for X-axis labels */
+        height: calc(100vh - 180px); /* Full height to maximize chart size */
+        max-height: calc(
+            100vh - 180px
+        ); /* Maximum height to leave space for x-axis labels */
         min-height: 200px;
         overflow: visible; /* Allow X-axis labels to be visible outside container */
         margin-bottom: 20px; /* Additional margin for x-axis labels */
@@ -379,13 +400,50 @@ body {
 
 /* Additional tablet landscape-specific fixes */
 @media screen and (min-width: 901px) and (max-width: 1200px) and (orientation: landscape) {
+    body {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+    .app-header {
+        flex-shrink: 0;
+    }
     .charts {
+        flex: 0 1 auto;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+        padding: 4px;
         padding-bottom: 70px; /* Increased bottom padding for larger axis labels in landscape */
+        margin: auto 0;
     }
     .chart-body {
-        height: calc(
-            100vh - 220px
-        ); /* Further reduced height for landscape with larger fonts */
+        height: calc(100vh - 220px); /* Full height for landscape with larger fonts */
         margin-bottom: 35px; /* Increased margin for larger axis labels */
+    }
+}
+
+/* Desktop landscape vertical centering */
+@media screen and (min-width: 1201px) and (orientation: landscape) {
+    body {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+    .app-header {
+        flex-shrink: 0;
+    }
+    .charts {
+        flex: 0 1 auto;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+        padding: 4px;
+        padding-bottom: 50px;
+        margin: auto 0;
+    }
+    .chart-body {
+        height: calc(100vh - 180px); /* Full height for desktop landscape */
+        max-height: calc(100vh - 180px);
     }
 }
