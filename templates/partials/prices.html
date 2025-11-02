@@ -168,6 +168,9 @@
                 // Draw major gridlines (every 5 cents)
                 drawMajorGridlines(chartElement._chartInstance, chartElement, chartElement._originalPriceRange.minPrice, chartElement._originalPriceRange.maxPrice);
 
+                // Draw hourly vertical lines
+                drawHourlyVerticalLines(chartElement._chartInstance, chartElement, chartElement._granularity || 'hour');
+
                 // Add now line for today's chart
                 if (date === 'today' && chartElement._validData) {
                     addNowLine(chartElement._chartInstance, chartElement, chartElement._validData);
@@ -516,6 +519,9 @@
                         google.visualization.events.addListener(chart, 'ready', function () {
                             // Draw major gridlines (every 5 cents) - brighter than minor ones
                             drawMajorGridlines(chart, chartElement, data.minPrice, data.maxPrice);
+
+                            // Draw hourly vertical lines
+                            drawHourlyVerticalLines(chart, chartElement, data.granularity || 'hour');
 
                             if (date === 'today') {
                                 addNowLine(chart, chartElement, validData);
@@ -889,6 +895,95 @@
 
             } catch (error) {
                 console.error('Error drawing gridlines:', error);
+            }
+        }
+
+        function drawHourlyVerticalLines(chart, chartElement, granularity) {
+            try {
+                console.log('drawHourlyVerticalLines called with granularity:', granularity);
+
+                // Remove any existing vertical lines to prevent duplicates
+                const existingLines = chartElement.querySelectorAll('.hourly-vertical-line');
+                existingLines.forEach(line => line.remove());
+
+                const svgElement = chartElement.querySelector('svg');
+                if (!svgElement) {
+                    console.error('No SVG element found in chart');
+                    return;
+                }
+
+                const chartLayout = chart.getChartLayoutInterface();
+                const chartArea = chartLayout.getChartAreaBoundingBox();
+                if (!chartArea) {
+                    console.error('No chart area bounding box found');
+                    return;
+                }
+
+                // Create a group element for all vertical lines
+                const verticalLinesGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                verticalLinesGroup.setAttribute('class', 'hourly-vertical-lines-group');
+
+                // Draw vertical lines at every hour
+                // For hourly data: every data point (0-23)
+                // For 15-minute data: every 4th data point (0, 4, 8, ..., 92)
+                const hourStep = granularity === 'quarter_hour' ? 4 : 1;
+                const maxDataPoint = granularity === 'quarter_hour' ? 96 : 24;
+
+                for (let hour = 0; hour < 24; hour++) {
+                    const dataPointIndex = hour * hourStep;
+                    if (dataPointIndex < maxDataPoint) {
+                        try {
+                            const xPosition = chartLayout.getXLocation(dataPointIndex);
+
+                            // Create vertical line
+                            const verticalLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                            verticalLine.setAttribute('class', 'hourly-vertical-line');
+                            verticalLine.setAttribute('x1', xPosition.toString());
+                            verticalLine.setAttribute('y1', chartArea.top.toString());
+                            verticalLine.setAttribute('x2', xPosition.toString());
+                            verticalLine.setAttribute('y2', (chartArea.top + chartArea.height).toString());
+                            verticalLine.setAttribute('stroke', '#555555');  // Dark gray
+                            verticalLine.setAttribute('stroke-width', '1');  // Thin line
+                            verticalLine.setAttribute('opacity', '0.5');  // Semi-transparent
+                            verticalLine.setAttribute('style', 'stroke: #555555 !important; stroke-width: 1px !important; opacity: 0.5 !important;');
+                            verticalLine.setAttribute('data-hour', hour.toString());
+
+                            verticalLinesGroup.appendChild(verticalLine);
+                        } catch (e) {
+                            console.warn('Could not draw vertical line for hour:', hour, e);
+                        }
+                    }
+                }
+
+                // Insert vertical lines before data bars but after background
+                const dataGroups = svgElement.querySelectorAll('g');
+                let dataGroup = null;
+
+                for (let group of dataGroups) {
+                    if (group.querySelector('rect')) {
+                        dataGroup = group;
+                        break;
+                    }
+                }
+
+                if (dataGroup) {
+                    svgElement.insertBefore(verticalLinesGroup, dataGroup);
+                } else {
+                    let insertPoint = svgElement.firstChild;
+                    while (insertPoint && (insertPoint.tagName === 'defs' || insertPoint.tagName === 'rect')) {
+                        insertPoint = insertPoint.nextSibling;
+                    }
+
+                    if (insertPoint) {
+                        svgElement.insertBefore(verticalLinesGroup, insertPoint);
+                    } else {
+                        svgElement.appendChild(verticalLinesGroup);
+                    }
+                }
+
+                console.log('Hourly vertical lines drawn successfully');
+            } catch (error) {
+                console.error('Error drawing hourly vertical lines:', error);
             }
         }
 
