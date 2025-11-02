@@ -849,4 +849,17 @@
     setTimeout(() => {
         window.updateCurrentPrice();
     }, 1000); // Delay to allow charts to load
+
+    // Additional aggressive fallback: check and update price every 15 seconds
+    // This ensures the price updates even if the template calls don't execute
+    setInterval(() => {
+        if (!document.hidden) {
+            const priceEl = d.getElementById('current-price');
+            const todayChartElement = d.querySelector('#todayChart [id*="googleChart"]');
+            if (priceEl && todayChartElement && todayChartElement._validData && priceEl.textContent === '-- c/kWh') {
+                console.log('Fallback: Updating price (template calls may not have worked)');
+                window.updateCurrentPrice();
+            }
+        }
+    }, 15000); // Check every 15 seconds
 })();
