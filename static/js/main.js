@@ -753,13 +753,17 @@
 
     // Function to update current price display in header
     window.updateCurrentPrice = function() {
+        console.log('updateCurrentPrice called');
+        
         const priceEl = d.getElementById('current-price');
+        console.log('Price element:', priceEl ? 'FOUND' : 'NOT FOUND');
         if (!priceEl) {
             console.warn('Current price element not found');
             return;
         }
 
         const todayChartElement = d.querySelector('#todayChart [id*="googleChart"]');
+        console.log('Today chart element:', todayChartElement ? 'FOUND' : 'NOT FOUND');
         if (!todayChartElement) {
             console.warn('Today chart element not found');
             priceEl.textContent = '-- c/kWh';
@@ -767,6 +771,7 @@
             return;
         }
 
+        console.log('Chart _validData:', todayChartElement._validData ? 'EXISTS' : 'MISSING');
         if (!todayChartElement._validData) {
             console.warn('Valid data not available yet');
             priceEl.textContent = '-- c/kWh';
@@ -778,11 +783,11 @@
         const now = new Date();
         const currentHour = now.getHours();
         const currentMinutes = now.getMinutes();
-
+        
         // Determine which data point corresponds to the current time
         const granularity = todayChartElement._granularity || 'hour';
         let currentTimeStr;
-
+        
         if (granularity === 'quarter_hour') {
             // For 15-minute data, find the current 15-minute interval
             const quarter = Math.floor(currentMinutes / 15);
@@ -794,10 +799,10 @@
         }
 
         console.log('Looking for time:', currentTimeStr, 'granularity:', granularity);
-
+        
         // Find the data row for current time
         const currentData = todayChartElement._validData.find(row => row[0] === currentTimeStr);
-
+        
         if (!currentData) {
             console.warn('No data found for current time:', currentTimeStr);
             console.log('Available times:', todayChartElement._validData.map(r => r[0]).slice(0, 5));
@@ -818,12 +823,12 @@
         const mediumPrice = parseFloat(currentData[2]) || 0;
         const highPrice = parseFloat(currentData[3]) || 0;
         const marginPrice = parseFloat(currentData[4]) || 0;
-
+        
         const spotPrice = lowPrice + mediumPrice + highPrice;
         const totalPrice = spotPrice + marginPrice;
-
+        
         console.log('Current prices - Low:', lowPrice, 'Med:', mediumPrice, 'High:', highPrice, 'Margin:', marginPrice, 'Total:', totalPrice);
-
+        
         // Color code based on spot price tier (same as bar coloring)
         let color;
         if (spotPrice < 5) {
@@ -833,9 +838,10 @@
         } else {
             color = '#e74c3c'; // Red
         }
-
+        
         priceEl.textContent = totalPrice.toFixed(2) + ' c/kWh';
         priceEl.style.color = color;
+        console.log('Price updated successfully:', totalPrice.toFixed(2), 'c/kWh, color:', color);
     };
 
     // Set up periodic updates for current price (every minute)
