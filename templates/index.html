@@ -24,7 +24,11 @@
 
 <body data-app-version="{{ app_version }}" data-default-margin="{{ '%.3f' % (margin_cents or 0.0) }}">
     <header class="app-header">
-        <h1>Spot is a dog</h1>
+        <div class="header-left">
+            <h1>Spot is a dog</h1>
+            <span id="current-price" class="current-price">-- c/kWh</span>
+        </div>
+        <div class="header-right"></div>
     </header>
 
     <main class="charts">

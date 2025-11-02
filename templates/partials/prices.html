@@ -176,6 +176,10 @@
                     addNowLine(chartElement._chartInstance, chartElement, chartElement._validData);
                     // Restart the timer after redraw
                     startNowLineTimer(chartElement._chartInstance, chartElement, chartElement._validData);
+                    // Update current price display
+                    if (window.updateCurrentPrice) {
+                        window.updateCurrentPrice();
+                    }
                 }
 
                 // Overlay 0–23 labels on quarter-hour redraw
@@ -527,6 +531,10 @@
                                 addNowLine(chart, chartElement, validData);
                                 // Set up timer to update the now line every minute
                                 startNowLineTimer(chart, chartElement, validData);
+                                // Update current price display
+                                if (window.updateCurrentPrice) {
+                                    window.updateCurrentPrice();
+                                }
                             }
                         });
 

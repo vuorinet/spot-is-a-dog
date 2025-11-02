@@ -22,13 +22,38 @@ body {
 }
 
 .app-header {
-    display: flex;
-    justify-content: center;
-    align-items: center;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
     padding: 8px 12px;
     border-bottom: 1px solid #222;
     font-size: 14px;
     flex-shrink: 0;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.header-left h1 {
+    margin: 0;
+    font-size: 30px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.current-price {
+    font-size: 30px;
+    color: #4a9eff;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.header-right {
+    display: none;
 }
 
 .charts {
@@ -107,6 +132,38 @@ body {
 
 /* Mobile Portrait - Both charts fit on screen without scrolling */
 @media screen and (max-width: 900px) and (orientation: portrait) {
+    .app-header {
+        padding: 3px 6px; /* Reduce header padding to save space */
+        padding-right: 12px; /* Extra padding for scrollbar */
+        font-size: 12px;
+        display: flex;
+        justify-content: flex-start;
+        align-items: center;
+        gap: 0;
+        width: 100%;
+    }
+    .header-left {
+        display: flex;
+        align-items: center;
+        gap: 0;
+        flex: 1 1 100%;
+        width: 100%;
+    }
+    .header-left h1 {
+        font-size: 18px;
+        flex: 0 0 auto;
+        margin: 0;
+    }
+    .current-price {
+        font-size: 18px;
+        flex: 0 0 auto;
+        margin-left: auto;
+        padding-right: 6px;
+        margin-right: 12px;
+    }
+    .header-right {
+        display: none;
+    }
     .charts {
         grid-template-columns: 1fr; /* Always stacked on mobile */
         gap: 2px; /* Reduce gap to save space */
@@ -123,10 +180,6 @@ body {
         padding: 0;
         overflow: hidden;
     }
-    .app-header {
-        padding: 3px 6px; /* Reduce header padding to save space */
-        font-size: 12px;
-    }
     .chart-head {
         font-size: 11px;
         margin-bottom: 1px; /* Reduce margin to save space */
@@ -135,6 +188,37 @@ body {
 
 /* Mobile Landscape - One chart fits well, tomorrow chart lurks at bottom */
 @media screen and (max-width: 900px) and (orientation: landscape) {
+    .app-header {
+        padding: 4px 8px;
+        font-size: 12px;
+        display: flex;
+        justify-content: flex-start;
+        align-items: center;
+        gap: 0;
+    }
+    .header-left {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex: 1;
+        min-width: 0;
+    }
+    .header-left h1 {
+        font-size: 18px;
+        flex: 0 0 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .current-price {
+        font-size: 18px;
+        flex: 0 0 auto;
+        padding: 0 6px;
+    }
+    .header-right {
+        display: none;
+    }
     .charts {
         grid-template-columns: 1fr; /* Always stacked on mobile */
         gap: 8px; /* Normal gap between charts */
@@ -172,6 +256,12 @@ body {
         padding: 4px 8px;
         font-size: 12px;
     }
+    .header-left h1 {
+        font-size: 18px;
+    }
+    .current-price {
+        font-size: 18px;
+    }
     .chart-head {
         font-size: 11px;
         margin-bottom: 2px;
@@ -180,6 +270,26 @@ body {
 
 /* Tablets and Desktop (side-by-side layout) */
 @media screen and (min-width: 901px) {
+    .app-header {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+    }
+    .header-left {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+    }
+    .header-left h1 {
+        font-size: 30px;
+    }
+    .current-price {
+        font-size: 30px;
+    }
+    .header-right {
+        display: none;
+    }
     .charts {
         grid-template-columns: 1fr 1fr; /* Side-by-side on tablets and desktop */
         gap: 4px;

@@ -750,4 +750,103 @@
         // Use selective refresh with both charts enabled for backwards compatibility
         window.refreshChartsSelective(true, true);
     };
+
+    // Function to update current price display in header
+    window.updateCurrentPrice = function() {
+        const priceEl = d.getElementById('current-price');
+        if (!priceEl) {
+            console.warn('Current price element not found');
+            return;
+        }
+
+        const todayChartElement = d.querySelector('#todayChart [id*="googleChart"]');
+        if (!todayChartElement) {
+            console.warn('Today chart element not found');
+            priceEl.textContent = '-- c/kWh';
+            priceEl.style.color = '#4a9eff';
+            return;
+        }
+
+        if (!todayChartElement._validData) {
+            console.warn('Valid data not available yet');
+            priceEl.textContent = '-- c/kWh';
+            priceEl.style.color = '#4a9eff';
+            return;
+        }
+
+        // Get current time
+        const now = new Date();
+        const currentHour = now.getHours();
+        const currentMinutes = now.getMinutes();
+
+        // Determine which data point corresponds to the current time
+        const granularity = todayChartElement._granularity || 'hour';
+        let currentTimeStr;
+
+        if (granularity === 'quarter_hour') {
+            // For 15-minute data, find the current 15-minute interval
+            const quarter = Math.floor(currentMinutes / 15);
+            const intervalIndex = currentHour * 4 + quarter;
+            currentTimeStr = intervalIndex.toString();
+        } else {
+            // For hourly data, use hour only
+            currentTimeStr = currentHour.toString();
+        }
+
+        console.log('Looking for time:', currentTimeStr, 'granularity:', granularity);
+
+        // Find the data row for current time
+        const currentData = todayChartElement._validData.find(row => row[0] === currentTimeStr);
+
+        if (!currentData) {
+            console.warn('No data found for current time:', currentTimeStr);
+            console.log('Available times:', todayChartElement._validData.map(r => r[0]).slice(0, 5));
+            priceEl.textContent = '-- c/kWh';
+            priceEl.style.color = '#4a9eff';
+            return;
+        }
+
+        if (currentData.length < 5) {
+            console.warn('Data row too short:', currentData.length);
+            priceEl.textContent = '-- c/kWh';
+            priceEl.style.color = '#4a9eff';
+            return;
+        }
+
+        // Calculate spot price (low + medium + high, excluding margin)
+        const lowPrice = parseFloat(currentData[1]) || 0;
+        const mediumPrice = parseFloat(currentData[2]) || 0;
+        const highPrice = parseFloat(currentData[3]) || 0;
+        const marginPrice = parseFloat(currentData[4]) || 0;
+
+        const spotPrice = lowPrice + mediumPrice + highPrice;
+        const totalPrice = spotPrice + marginPrice;
+
+        console.log('Current prices - Low:', lowPrice, 'Med:', mediumPrice, 'High:', highPrice, 'Margin:', marginPrice, 'Total:', totalPrice);
+
+        // Color code based on spot price tier (same as bar coloring)
+        let color;
+        if (spotPrice < 5) {
+            color = '#2ecc71'; // Green
+        } else if (spotPrice < 15) {
+            color = '#f1c40f'; // Yellow
+        } else {
+            color = '#e74c3c'; // Red
+        }
+
+        priceEl.textContent = totalPrice.toFixed(2) + ' c/kWh';
+        priceEl.style.color = color;
+    };
+
+    // Set up periodic updates for current price (every minute)
+    setInterval(() => {
+        if (!document.hidden) {
+            window.updateCurrentPrice();
+        }
+    }, 60000); // Update every minute
+
+    // Initial update
+    setTimeout(() => {
+        window.updateCurrentPrice();
+    }, 1000); // Delay to allow charts to load
 })();
