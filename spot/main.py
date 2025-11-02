@@ -567,7 +567,7 @@ def create_app() -> FastAPI:
             cache_needs_refresh = False
             if cache.today is None:
                 logger.warning(
-                    "Cache not warm during chart data request, ensuring cache"
+                    "Cache not warm during chart data request, ensuring cache",
                 )
                 cache_needs_refresh = True
             else:
@@ -718,6 +718,7 @@ def create_app() -> FastAPI:
                         "maxPrice": global_max_price,
                         "minPrice": global_min_price,
                         "dateString": target.strftime("%A %m/%d/%Y"),
+                        "dateIso": target.isoformat(),  # ISO format for client-side localization
                         "granularity": actual_granularity,  # Use the determined granularity
                         "intervalCount": len(complete_chart_data),
                         "error": "No price data available for this date",
@@ -730,6 +731,7 @@ def create_app() -> FastAPI:
                     "maxPrice": global_max_price,
                     "minPrice": global_min_price,
                     "dateString": target.strftime("%A %m/%d/%Y"),
+                    "dateIso": target.isoformat(),  # ISO format for client-side localization
                     "granularity": actual_granularity,
                     "intervalCount": len(complete_chart_data),
                 },

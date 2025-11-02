@@ -24,9 +24,58 @@
         const chartElement = document.getElementById(chartId);
         const dateStringEl = document.getElementById(dateStringId);
 
+        // Get chart section to update the header text
+        const chartSection = document.getElementById(date + 'Chart');
+        const chartHeadEl = chartSection ? chartSection.querySelector('.chart-head') : null;
+
         if (!chartElement) {
             console.error('Chart element not found:', chartId);
             return;
+        }
+
+        // Localize the "Today" or "Tomorrow" label
+        if (chartHeadEl) {
+            let localizedLabel;
+            if (date === 'today') {
+                // Translation object for common languages
+                const translations = {
+                    'en': 'Today',
+                    'fi': 'Tänään',
+                    'sv': 'Idag',
+                    'de': 'Heute',
+                    'fr': "Aujourd'hui",
+                    'es': 'Hoy',
+                    'it': 'Oggi',
+                    'nl': 'Vandaag',
+                    'pt': 'Hoje',
+                    'ru': 'Сегодня',
+                    'pl': 'Dzisiaj',
+                };
+                const lang = navigator.language.split('-')[0];
+                localizedLabel = translations[lang] || translations['en'];
+            } else if (date === 'tomorrow') {
+                const translations = {
+                    'en': 'Tomorrow',
+                    'fi': 'Huomenna',
+                    'sv': 'Imorgon',
+                    'de': 'Morgen',
+                    'fr': 'Demain',
+                    'es': 'Mañana',
+                    'it': 'Domani',
+                    'nl': 'Morgen',
+                    'pt': 'Amanhã',
+                    'ru': 'Завтра',
+                    'pl': 'Jutro',
+                };
+                const lang = navigator.language.split('-')[0];
+                localizedLabel = translations[lang] || translations['en'];
+            } else {
+                // For specific dates, keep original or use date
+                localizedLabel = chartHeadEl.textContent.split(' - ')[0] || date;
+            }
+            // Preserve the date string span structure
+            chartHeadEl.innerHTML = localizedLabel +
+                `<span class="date-string" id="${dateStringId}"></span>`;
         }
 
         // Check if we already have cached data and chart instance for this element
@@ -296,9 +345,134 @@
                     console.log('First few data rows:', data.data.slice(0, 3));
                     console.log('Viewport width:', window.innerWidth, 'isMobile:', window.innerWidth <= 768);
 
-                    // Update date string
-                    if (dateStringEl) {
-                        dateStringEl.textContent = ` - ${data.dateString}`;
+                    // Update date string with localized format
+                    // Re-fetch dateStringEl in case DOM was updated (for localization)
+                    const currentDateStringEl = document.getElementById(dateStringId);
+                    if (currentDateStringEl) {
+                        let formattedDate;
+                        console.log('Date localization - dateIso:', data.dateIso, 'dateString:', data.dateString);
+                        if (data.dateIso) {
+                            // Parse ISO date and format using browser's locale
+                            // ISO format is YYYY-MM-DD, so we can parse it directly
+                            const dateObj = new Date(data.dateIso);
+                            if (!isNaN(dateObj.getTime())) {
+                                // Format weekday and date separately to handle Finnish case correctly
+                                const dateFormatter = new Intl.DateTimeFormat(undefined, {
+                                    weekday: 'long',
+                                    year: 'numeric',
+                                    month: 'numeric',
+                                    day: 'numeric'
+                                });
+                                let dateStr = dateFormatter.format(dateObj);
+
+                                // For Finnish, fix weekday case: remove "na" suffix (inessive -> nominative)
+                                // e.g., "maanantaina" -> "maanantai", "tiistaina" -> "tiistai", etc.
+                                const lang = navigator.language.split('-')[0];
+                                if (lang === 'fi') {
+                                    const weekdays = {
+                                        'maanantaina': 'maanantai',
+                                        'tiistaina': 'tiistai',
+                                        'keskiviikkona': 'keskiviikko',
+                                        'torstaina': 'torstai',
+                                        'perjantaina': 'perjantai',
+                                        'lauantaina': 'lauantai',
+                                        'sunnuntaina': 'sunnuntai'
+                                    };
+                                    for (const [inessive, nominative] of Object.entries(weekdays)) {
+                                        if (dateStr.toLowerCase().includes(inessive)) {
+                                            dateStr = dateStr.replace(new RegExp(inessive, 'gi'), nominative);
+                                            break;
+                                        }
+                                    }
+                                }
+                                formattedDate = dateStr;
+                            } else {
+                                // If parsing failed, try with time component
+                                const dateObj2 = new Date(data.dateIso + 'T00:00:00');
+                                if (!isNaN(dateObj2.getTime())) {
+                                    const dateFormatter = new Intl.DateTimeFormat(undefined, {
+                                        weekday: 'long',
+                                        year: 'numeric',
+                                        month: 'numeric',
+                                        day: 'numeric'
+                                    });
+                                    let dateStr = dateFormatter.format(dateObj2);
+
+                                    // For Finnish, fix weekday case
+                                    const lang = navigator.language.split('-')[0];
+                                    if (lang === 'fi') {
+                                        const weekdays = {
+                                            'maanantaina': 'maanantai',
+                                            'tiistaina': 'tiistai',
+                                            'keskiviikkona': 'keskiviikko',
+                                            'torstaina': 'torstai',
+                                            'perjantaina': 'perjantai',
+                                            'lauantaina': 'lauantai',
+                                            'sunnuntaina': 'sunnuntai'
+                                        };
+                                        for (const [inessive, nominative] of Object.entries(weekdays)) {
+                                            if (dateStr.toLowerCase().includes(inessive)) {
+                                                dateStr = dateStr.replace(new RegExp(inessive, 'gi'), nominative);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    formattedDate = dateStr;
+                                } else {
+                                    // Fallback to server format if parsing fails
+                                    formattedDate = data.dateString;
+                                }
+                            }
+                        } else {
+                            // Fallback to server format if dateIso not available
+                            // But try to parse the dateString to localize it
+                            if (data.dateString) {
+                                // Try to parse the dateString format (e.g., "Sunday 11/02/2025")
+                                // Extract the date part (MM/DD/YYYY)
+                                const dateMatch = data.dateString.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+                                if (dateMatch) {
+                                    const [, month, day, year] = dateMatch;
+                                    const dateObj = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+                                    if (!isNaN(dateObj.getTime())) {
+                                        const dateFormatter = new Intl.DateTimeFormat(undefined, {
+                                            weekday: 'long',
+                                            year: 'numeric',
+                                            month: 'numeric',
+                                            day: 'numeric'
+                                        });
+                                        let dateStr = dateFormatter.format(dateObj);
+
+                                        // For Finnish, fix weekday case
+                                        const lang = navigator.language.split('-')[0];
+                                        if (lang === 'fi') {
+                                            const weekdays = {
+                                                'maanantaina': 'maanantai',
+                                                'tiistaina': 'tiistai',
+                                                'keskiviikkona': 'keskiviikko',
+                                                'torstaina': 'torstai',
+                                                'perjantaina': 'perjantai',
+                                                'lauantaina': 'lauantai',
+                                                'sunnuntaina': 'sunnuntai'
+                                            };
+                                            for (const [inessive, nominative] of Object.entries(weekdays)) {
+                                                if (dateStr.toLowerCase().includes(inessive)) {
+                                                    dateStr = dateStr.replace(new RegExp(inessive, 'gi'), nominative);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        formattedDate = dateStr;
+                                    } else {
+                                        formattedDate = data.dateString;
+                                    }
+                                } else {
+                                    formattedDate = data.dateString;
+                                }
+                            } else {
+                                formattedDate = '';
+                            }
+                        }
+                        currentDateStringEl.textContent = ` - ${formattedDate}`;
                     }
 
                     // Handle case where no data is available
