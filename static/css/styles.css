@@ -53,7 +53,35 @@ body {
 }
 
 .header-right {
-    display: none;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.fullscreen-btn {
+    background: transparent;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #ddd;
+    cursor: pointer;
+    padding: 6px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+.fullscreen-btn:hover {
+    background: #222;
+    border-color: #666;
+}
+
+.fullscreen-btn:active {
+    background: #333;
+}
+
+.fullscreen-btn svg {
+    display: block;
 }
 
 .charts {
@@ -162,7 +190,17 @@ body {
         margin-right: 12px;
     }
     .header-right {
-        display: none;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        flex-shrink: 0;
+    }
+    .fullscreen-btn {
+        padding: 4px 6px;
+    }
+    .fullscreen-btn svg {
+        width: 16px;
+        height: 16px;
     }
     .charts {
         grid-template-columns: 1fr; /* Always stacked on mobile */
@@ -217,7 +255,17 @@ body {
         padding: 0 6px;
     }
     .header-right {
-        display: none;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        flex-shrink: 0;
+    }
+    .fullscreen-btn {
+        padding: 4px 6px;
+    }
+    .fullscreen-btn svg {
+        width: 16px;
+        height: 16px;
     }
     .charts {
         grid-template-columns: 1fr; /* Always stacked on mobile */
@@ -288,7 +336,9 @@ body {
         font-size: 30px;
     }
     .header-right {
-        display: none;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
     }
     .charts {
         grid-template-columns: 1fr 1fr; /* Side-by-side on tablets and desktop */

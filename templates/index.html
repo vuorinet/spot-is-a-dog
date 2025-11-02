@@ -5,6 +5,16 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
     <title>Spot is a dog</title>
+
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#000000" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Spot" />
+    <link rel="manifest" href="/static/manifest.json" />
+
+    <!-- iOS Icons -->
+    <link rel="apple-touch-icon" href="/static/icon-192.png" />
     <link rel="stylesheet" href="/static/css/styles.css?v={{ app_version }}" />
     <script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12"></script>
     <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
@@ -28,7 +38,16 @@
             <h1>Spot is a dog</h1>
             <span id="current-price" class="current-price">-- c/kWh</span>
         </div>
-        <div class="header-right"></div>
+        <div class="header-right">
+            <button id="fullscreen-btn" class="fullscreen-btn" aria-label="Toggle fullscreen" title="Toggle fullscreen">
+                <svg id="fullscreen-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2">
+                    <path
+                        d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3">
+                    </path>
+                </svg>
+            </button>
+        </div>
     </header>
 
     <main class="charts">

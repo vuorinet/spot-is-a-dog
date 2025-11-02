@@ -878,4 +878,67 @@
             console.log('[FALLBACK CHECK] Document is hidden, skipping');
         }
     }, 15000); // Check every 15 seconds
+
+    // Fullscreen toggle functionality
+    const fullscreenBtn = d.getElementById('fullscreen-btn');
+    const fullscreenIcon = d.getElementById('fullscreen-icon');
+    
+    // SVG paths for fullscreen and exit fullscreen icons
+    const fullscreenSVG = '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>';
+    const exitFullscreenSVG = '<path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path>';
+    
+    function updateFullscreenIcon(isFullscreen) {
+        if (fullscreenIcon) {
+            fullscreenIcon.innerHTML = isFullscreen ? exitFullscreenSVG : fullscreenSVG;
+        }
+    }
+    
+    function toggleFullscreen() {
+        if (!document.fullscreenElement && !document.webkitFullscreenElement && !document.mozFullScreenElement && !document.msFullscreenElement) {
+            // Enter fullscreen
+            const elem = document.documentElement;
+            if (elem.requestFullscreen) {
+                elem.requestFullscreen();
+            } else if (elem.webkitRequestFullscreen) {
+                elem.webkitRequestFullscreen();
+            } else if (elem.mozRequestFullScreen) {
+                elem.mozRequestFullScreen();
+            } else if (elem.msRequestFullscreen) {
+                elem.msRequestFullscreen();
+            }
+        } else {
+            // Exit fullscreen
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            } else if (document.webkitExitFullscreen) {
+                document.webkitExitFullscreen();
+            } else if (document.mozCancelFullScreen) {
+                document.mozCancelFullScreen();
+            } else if (document.msExitFullscreen) {
+                document.msExitFullscreen();
+            }
+        }
+    }
+    
+    // Listen for fullscreen changes to update icon
+    document.addEventListener('fullscreenchange', () => {
+        updateFullscreenIcon(!!document.fullscreenElement);
+    });
+    document.addEventListener('webkitfullscreenchange', () => {
+        updateFullscreenIcon(!!document.webkitFullscreenElement);
+    });
+    document.addEventListener('mozfullscreenchange', () => {
+        updateFullscreenIcon(!!document.mozFullScreenElement);
+    });
+    document.addEventListener('MSFullscreenChange', () => {
+        updateFullscreenIcon(!!document.msFullscreenElement);
+    });
+    
+    // Initial icon state
+    updateFullscreenIcon(false);
+    
+    // Button click handler
+    if (fullscreenBtn) {
+        fullscreenBtn.addEventListener('click', toggleFullscreen);
+    }
 })();
