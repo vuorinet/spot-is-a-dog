@@ -488,7 +488,7 @@
                             3: { color: '#666666' }   // gray for margin
                         },
                         bar: {
-                            groupWidth: '70%'
+                            groupWidth: '100%'
                         },
                         tooltip: {
                             isHtml: true,
@@ -956,7 +956,7 @@
 
                         // Use standard calculation for both granularities
                         const totalColumns = validData.length;
-                        const groupWidth = 0.7; // matches chart options
+                        const groupWidth = 1.0; // matches updated chart options (100%)
                         const effectiveWidth = chartArea.width * groupWidth;
                         const gapWidth = chartArea.width * (1 - groupWidth);
                         const columnWidth = effectiveWidth / totalColumns;
@@ -983,7 +983,7 @@
 
                     // Use standard spacing calculation
                     const totalColumns = granularity === 'quarter_hour' ? 96 : 24;
-                    const groupWidth = 0.7; // matches chart options
+                    const groupWidth = 1.0; // matches updated chart options (100%)
                     const effectiveWidth = chartArea.width * groupWidth;
                     const gapWidth = chartArea.width * (1 - groupWidth);
                     const columnWidth = effectiveWidth / totalColumns;
