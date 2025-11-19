@@ -827,7 +827,7 @@
         const spotPrice = lowPrice + mediumPrice + highPrice;
         const totalPrice = spotPrice + marginPrice;
 
-        console.log('Current prices - Low:', lowPrice, 'Med:', mediumPrice, 'High:', highPrice, 'Margin:', marginPrice, 'Total:', totalPrice);
+        console.log('Current prices - Low:', lowPrice, 'Med:', mediumPrice, 'High:', highPrice, 'Margin:', marginPrice, 'Spot:', spotPrice, 'Total:', totalPrice);
 
         // Color code based on spot price tier (same as bar coloring)
         let color;
@@ -839,9 +839,10 @@
             color = '#e74c3c'; // Red
         }
 
-        priceEl.textContent = totalPrice.toFixed(2) + ' c/kWh';
+        // Display spot price without margin
+        priceEl.textContent = spotPrice.toFixed(2) + ' c/kWh';
         priceEl.style.color = color;
-        console.log('Price updated successfully:', totalPrice.toFixed(2), 'c/kWh, color:', color);
+        console.log('Price updated successfully:', spotPrice.toFixed(2), 'c/kWh (spot price, no margin), color:', color);
     };
 
     // Set up periodic updates for current price (every minute)
