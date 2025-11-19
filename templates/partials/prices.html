@@ -1,7 +1,7 @@
 {% set entries = vm.entries %}
 {% set max_total = vm.maxTotal %}
 {% set chart_date = request.query_params.get('date', 'today') %}
-{% set chart_id = 'googleChart_' ~ chart_date %}
+{% set chart_id = 'chart_' ~ chart_date %}
 {% set date_string_id = 'dateString_' ~ chart_date %}
 <section id="{{ chart_date }}Chart" class="chart" aria-label="Prices chart" data-date="{{ chart_date }}"
     data-margin="{{ request.query_params.get('margin', '0') }}">
@@ -10,7 +10,7 @@
         <span class="date-string" id="{{ date_string_id }}"></span>
     </div>
     <div class="chart-body">
-        <div id="{{ chart_id }}" style="width: 100%; height: 100%;"></div>
+        <canvas id="{{ chart_id }}"></canvas>
     </div>
 </section>
 
@@ -19,7 +19,7 @@
     window.createChart = function (chartDate) {
         const date = chartDate || '{{ chart_date }}';
         const margin = '{{ request.query_params.get("margin", "0") }}';
-        const chartId = 'googleChart_' + date;
+        const chartId = 'chart_' + date;
         const dateStringId = 'dateString_' + date;
         const chartElement = document.getElementById(chartId);
         const dateStringEl = document.getElementById(dateStringId);
@@ -37,7 +37,6 @@
         if (chartHeadEl) {
             let localizedLabel;
             if (date === 'today') {
-                // Translation object for common languages
                 const translations = {
                     'en': 'Today',
                     'fi': 'Tänään',
@@ -70,1264 +69,528 @@
                 const lang = navigator.language.split('-')[0];
                 localizedLabel = translations[lang] || translations['en'];
             } else {
-                // For specific dates, keep original or use date
                 localizedLabel = chartHeadEl.textContent.split(' - ')[0] || date;
             }
-            // Preserve the date string span structure
             chartHeadEl.innerHTML = localizedLabel +
                 `<span class="date-string" id="${dateStringId}"></span>`;
         }
 
-        // Check if we already have cached data and chart instance for this element
-        if (chartElement._chartInstance && chartElement._chartData && chartElement._originalPriceRange) {
-            console.log('Redrawing existing chart for ' + date + ' without fetching new data');
+        // Check if chart already exists and destroy it
+        if (chartElement._chartInstance) {
+            chartElement._chartInstance.destroy();
+            chartElement._chartInstance = null;
+        }
 
-            // Clean up existing timers and handlers before redraw
-            if (chartElement._nowLineTimer) {
-                clearInterval(chartElement._nowLineTimer);
-                clearTimeout(chartElement._nowLineTimer);
-            }
-            if (chartElement._visibilityHandler) {
-                document.removeEventListener('visibilitychange', chartElement._visibilityHandler);
-            }
-            if (chartElement._focusHandler) {
-                window.removeEventListener('focus', chartElement._focusHandler);
-            }
-            if (chartElement._pageShowHandler) {
-                window.removeEventListener('pageshow', chartElement._pageShowHandler);
-            }
-            if (chartElement._pageHideHandler) {
-                window.removeEventListener('pagehide', chartElement._pageHideHandler);
-            }
+        // Clean up timers
+        if (chartElement._nowLineTimer) {
+            clearInterval(chartElement._nowLineTimer);
+            clearTimeout(chartElement._nowLineTimer);
+        }
+        if (chartElement._visibilityHandler) {
+            document.removeEventListener('visibilitychange', chartElement._visibilityHandler);
+        }
+        if (chartElement._focusHandler) {
+            window.removeEventListener('focus', chartElement._focusHandler);
+        }
+        if (chartElement._pageShowHandler) {
+            window.removeEventListener('pageshow', chartElement._pageShowHandler);
+        }
+        if (chartElement._pageHideHandler) {
+            window.removeEventListener('pagehide', chartElement._pageHideHandler);
+        }
 
-            // Recalculate responsive options since viewport may have changed
-            const isMobile = window.innerWidth <= 900;
-            const isTablet = window.innerWidth > 900 && window.innerWidth <= 1200;
-            const options = {
-                title: '',
-                hAxis: {
-                    title: '',
-                    textStyle: {
-                        fontSize: isMobile ? 10 : 12,
-                        color: (chartElement._granularity === 'quarter_hour') ? 'black' : 'white'
-                    },
-                    titleTextStyle: {
-                        color: 'white',
-                        fontSize: isMobile ? 10 : 12
-                    },
-                    slantedText: false,
-                    format: 'none',
-                    gridlines: { count: -1 },
-                    // Custom ticks for 15-minute data to show only hours
-                    ticks: (() => {
-                        const granularity = chartElement._granularity || 'hour';
-                        if (granularity === 'quarter_hour') {
-                            const ticks = [];
-                            // Create ticks at every 4th position (0, 4, 8, 12, ...)
-                            for (let hour = 0; hour < 24; hour++) {
-                                const position = hour * 4;
-                                ticks.push({ v: position.toString(), f: hour.toString() });
+        console.log('Creating chart for:', date, 'margin:', margin);
+
+        // Fetch chart data
+        let dateStr;
+        if (date === 'today') {
+            dateStr = 'today';
+        } else if (date === 'tomorrow') {
+            dateStr = 'tomorrow';
+        } else {
+            dateStr = date;
+        }
+
+        fetch(`/api/chart-data?date_str=${dateStr}&margin=${margin}`)
+            .then(response => response.json())
+            .then(data => {
+                console.log('Chart data received for', date, ':', data);
+
+                // Track metadata
+                const fetchTime = Date.now();
+                const fetchDate = new Date(fetchTime);
+                if (window.chartDataTimestamps) {
+                    window.chartDataTimestamps[date] = fetchTime;
+                }
+                if (window.chartDataMetadata) {
+                    window.chartDataMetadata[date] = {
+                        fetchedDate: fetchDate.toDateString(),
+                        fetchedHour: fetchDate.getHours()
+                    };
+                }
+
+                // Update date string with localized format
+                const currentDateStringEl = document.getElementById(dateStringId);
+                if (currentDateStringEl) {
+                    let formattedDate;
+                    if (data.dateIso) {
+                        const dateObj = new Date(data.dateIso);
+                        if (!isNaN(dateObj.getTime())) {
+                            const dateFormatter = new Intl.DateTimeFormat(undefined, {
+                                weekday: 'long',
+                                year: 'numeric',
+                                month: 'numeric',
+                                day: 'numeric'
+                            });
+                            let dateStr = dateFormatter.format(dateObj);
+                            const lang = navigator.language.split('-')[0];
+                            if (lang === 'fi') {
+                                const weekdays = {
+                                    'maanantaina': 'maanantai',
+                                    'tiistaina': 'tiistai',
+                                    'keskiviikkona': 'keskiviikko',
+                                    'torstaina': 'torstai',
+                                    'perjantaina': 'perjantai',
+                                    'lauantaina': 'lauantai',
+                                    'sunnuntaina': 'sunnuntai'
+                                };
+                                for (const [inessive, nominative] of Object.entries(weekdays)) {
+                                    if (dateStr.toLowerCase().includes(inessive)) {
+                                        dateStr = dateStr.replace(new RegExp(inessive, 'gi'), nominative);
+                                        break;
+                                    }
+                                }
                             }
-                            console.log('Using custom ticks for redraw (15-min):', ticks.slice(0, 5));
-                            return ticks;
+                            formattedDate = dateStr;
                         } else {
-                            // For hourly data, let Google Charts handle it
-                            return undefined;
+                            formattedDate = data.dateString;
                         }
-                    })(),
-                    // Force exactly 24 ticks for hourly data only
-                    count: (() => {
-                        const granularity = chartElement._granularity || 'hour';
-                        return granularity === 'quarter_hour' ? undefined : 24;
-                    })(),
-                    maxAlternation: 1,
-                    minTextSpacing: isTablet ? 8 : (isMobile ? 0 : 10),
-                    maxTextLines: 1,
-                    allowContainerBoundaryTextCutoff: false,
-                    // Force single row display and optimize spacing
-                    textPosition: 'out'
-                },
-                vAxis: {
-                    title: '',
-                    minValue: chartElement._originalPriceRange.minPrice,
-                    maxValue: chartElement._originalPriceRange.maxPrice,
-                    viewWindow: {
-                        min: chartElement._originalPriceRange.minPrice,
-                        max: chartElement._originalPriceRange.maxPrice
-                    },
-                    ticks: (() => {
-                        const ticks = [];
-                        const maxValue = chartElement._originalPriceRange.maxPrice;
-                        for (let i = chartElement._originalPriceRange.minPrice; i <= maxValue; i += 1) {
-                            if (i % 5 === 0) {
-                                ticks.push({ v: i, f: i.toString() });
-                            } else {
-                                ticks.push({ v: i, f: '' });
-                            }
-                        }
-                        return ticks;
-                    })(),
-                    gridlines: {
-                        count: 0, // Disable automatic gridlines completely - use only custom ones
-                        color: 'transparent'
-                    },
-                    minorGridlines: {
-                        count: 0 // Disable minor gridlines between major ones
-                    },
-                    textStyle: {
-                        fontSize: isMobile ? 12 : (isTablet ? 14 : 12), // Larger font for tablets
-                        color: 'white'
-                    },
-                    titleTextStyle: {
-                        color: 'white',
-                        fontSize: isMobile ? 12 : (isTablet ? 14 : 12)
+                    } else {
+                        formattedDate = data.dateString || '';
                     }
-                },
-                isStacked: true,
-                backgroundColor: 'black',
-                width: '100%',
-                height: '100%',
-                chartArea: {
-                    width: isMobile ? '75%' : '90%', // Reduce width to make room for Y-axis labels
-                    height: isMobile ? '85%' : (isTablet ? '45%' : '65%'),  // Further reduced height for tablets to prevent x-axis overflow
-                    top: isMobile ? 5 : 15,
-                    left: isMobile ? 20 : 30, // Reduced left margin to bring Y-axis closer
-                    right: isMobile ? 10 : 5,
-                    bottom: isMobile ? 15 : (isTablet ? 70 : 40)  // Increased bottom space for tablets
-                },
-                series: {
-                    0: { color: '#2ecc71' }, // Green
-                    1: { color: '#f1c40f' }, // Yellow
-                    2: { color: '#e74c3c' }, // Red
-                    3: { color: '#666666' }  // Gray for margin
-                },
-                bar: {
-                    groupWidth: (isMobile || isTablet) ? '95%' : '90%'
-                },
-                tooltip: {
-                    isHtml: true,
-                    textStyle: {
-                        fontSize: isMobile ? 12 : 14,
-                        color: 'black'
+                    currentDateStringEl.textContent = ` - ${formattedDate}`;
+                }
+
+                // Validate data
+                const validData = data.data.filter(row => Array.isArray(row) && row.length === 5);
+                if (validData.length === 0) {
+                    chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">No data available</div>';
+                    return;
+                }
+
+                // Process data for Chart.js
+                const labels = [];
+                const lowData = [];
+                const medData = [];
+                const highData = [];
+                const marginData = [];
+                const tooltips = [];
+
+                validData.forEach(row => {
+                    const [timeStr, lowPrice, mediumPrice, highPrice, marginPrice] = row;
+                    labels.push(timeStr);
+
+                    // Format time for tooltip
+                    let timeFormatted;
+                    if (data.granularity === 'quarter_hour') {
+                        const intervalIndex = parseInt(timeStr);
+                        const hour = Math.floor(intervalIndex / 4);
+                        const quarter = intervalIndex % 4;
+                        const minute = quarter * 15;
+                        timeFormatted = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+                    } else {
+                        const hour = parseInt(timeStr);
+                        timeFormatted = `${hour.toString().padStart(2, '0')}:00`;
+                    }
+
+                    const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
+                    const totalPrice = spotPrice + (marginPrice || 0);
+
+                    // Create tooltip HTML
+                    let tooltipContent = `
+                        <div style="padding: 8px; font-family: Arial, sans-serif; font-size: 13px; line-height: 1.4;">
+                            <div style="font-weight: bold; margin-bottom: 4px; color: #333;">${timeFormatted}</div>
+                    `;
+                    if (lowPrice !== 0 && lowPrice !== null && lowPrice !== undefined) {
+                        tooltipContent += `<div style="color: #666;">Price: <strong>${lowPrice.toFixed(2)} c/kWh</strong></div>`;
+                    }
+                    if (mediumPrice !== 0 && mediumPrice !== null && mediumPrice !== undefined) {
+                        tooltipContent += `<div style="color: #666;">Price: <strong>${mediumPrice.toFixed(2)} c/kWh</strong></div>`;
+                    }
+                    if (highPrice !== 0 && highPrice !== null && highPrice !== undefined) {
+                        tooltipContent += `<div style="color: #666;">Price: <strong>${highPrice.toFixed(2)} c/kWh</strong></div>`;
+                    }
+                    tooltipContent += `<div style="color: #666;">Margin: <strong>${(marginPrice || 0).toFixed(2)} c/kWh</strong></div>`;
+                    tooltipContent += `
+                            <div style="border-top: 1px solid #ddd; margin-top: 4px; padding-top: 4px; color: #333;">
+                                <strong>Total: ${totalPrice.toFixed(2)} c/kWh</strong>
+                            </div>
+                        </div>
+                    `;
+                    tooltips.push(tooltipContent.trim());
+
+                    // Use null for zero values to skip rendering
+                    lowData.push(lowPrice !== 0 ? lowPrice : null);
+                    medData.push(mediumPrice !== 0 ? mediumPrice : null);
+                    highData.push(highPrice !== 0 ? highPrice : null);
+                    marginData.push(marginPrice !== 0 ? marginPrice : null);
+                });
+
+                // Responsive settings
+                const isMobile = window.innerWidth <= 900;
+                const isTablet = window.innerWidth > 900 && window.innerWidth <= 1200;
+                const maxPrice = Math.max(15, data.maxPrice);
+                const minPrice = data.minPrice;
+
+                // Prepare annotations for gridlines, vertical lines, and now line
+                const annotations = {
+                    x: [],
+                    y: []
+                };
+
+                // Add hourly vertical lines
+                const hourStep = data.granularity === 'quarter_hour' ? 4 : 1;
+                for (let hour = 0; hour < 24; hour++) {
+                    const dataPointIndex = hour * hourStep;
+                    if (dataPointIndex < validData.length) {
+                        annotations.x.push({
+                            type: 'line',
+                            xMin: dataPointIndex,
+                            xMax: dataPointIndex,
+                            borderColor: '#555555',
+                            borderWidth: 1,
+                            opacity: 0.5
+                        });
                     }
                 }
-            };
 
-            chartElement._chartInstance.draw(chartElement._chartData, options);
-
-            // Re-add major gridlines and now line after redraw
-            setTimeout(() => {
-                // Draw major gridlines (every 5 cents)
-                drawMajorGridlines(chartElement._chartInstance, chartElement, chartElement._originalPriceRange.minPrice, chartElement._originalPriceRange.maxPrice);
-
-                // Draw hourly vertical lines
-                drawHourlyVerticalLines(chartElement._chartInstance, chartElement, chartElement._granularity || 'hour');
+                // Add horizontal gridlines (every 1 cent, major every 5)
+                for (let price = minPrice; price <= maxPrice; price += 1) {
+                    const isMajor = price % 5 === 0;
+                    annotations.y.push({
+                        type: 'line',
+                        yMin: price,
+                        yMax: price,
+                        borderColor: isMajor ? '#aaaaaa' : '#666666',
+                        borderWidth: isMajor ? 2 : 1.5,
+                        opacity: isMajor ? 1.0 : 0.7
+                    });
+                }
 
                 // Add now line for today's chart
-                if (date === 'today' && chartElement._validData) {
-                    addNowLine(chartElement._chartInstance, chartElement, chartElement._validData);
-                    // Restart the timer after redraw
-                    startNowLineTimer(chartElement._chartInstance, chartElement, chartElement._validData);
-                    // Update current price display
+                if (date === 'today') {
+                    const now = new Date();
+                    const currentHour = now.getHours();
+                    const currentMinutes = now.getMinutes();
+                    let dataPointIndex = -1;
+
+                    if (data.granularity === 'quarter_hour') {
+                        const quarter = Math.floor(currentMinutes / 15);
+                        const intervalIndex = currentHour * 4 + quarter;
+                        dataPointIndex = validData.findIndex(row => row[0] === intervalIndex.toString());
+                    } else {
+                        dataPointIndex = validData.findIndex(row => row[0] === currentHour.toString());
+                    }
+
+                    if (dataPointIndex >= 0) {
+                        annotations.x.push({
+                            type: 'line',
+                            xMin: dataPointIndex,
+                            xMax: dataPointIndex,
+                            borderColor: '#ff9900',
+                            borderWidth: 3,
+                            borderDash: [4, 3],
+                            opacity: 0.9,
+                            label: {
+                                display: false
+                            }
+                        });
+                    }
+                }
+
+                // Chart.js configuration
+                const chartConfig = {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'Low Price',
+                                data: lowData,
+                                backgroundColor: '#2ecc71',
+                                stack: 'price'
+                            },
+                            {
+                                label: 'Medium Price',
+                                data: medData,
+                                backgroundColor: '#f1c40f',
+                                stack: 'price'
+                            },
+                            {
+                                label: 'High Price',
+                                data: highData,
+                                backgroundColor: '#e74c3c',
+                                stack: 'price'
+                            },
+                            {
+                                label: 'Margin',
+                                data: marginData,
+                                backgroundColor: '#666666',
+                                stack: 'price'
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            tooltip: {
+                                enabled: true,
+                                mode: 'index',
+                                intersect: false,
+                                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                                titleColor: '#333',
+                                bodyColor: '#666',
+                                borderColor: '#ddd',
+                                borderWidth: 1,
+                                padding: 8,
+                                callbacks: {
+                                    title: function (context) {
+                                        const index = context[0].dataIndex;
+                                        const timeStr = labels[index];
+                                        if (data.granularity === 'quarter_hour') {
+                                            const intervalIndex = parseInt(timeStr);
+                                            const hour = Math.floor(intervalIndex / 4);
+                                            const quarter = intervalIndex % 4;
+                                            const minute = quarter * 15;
+                                            return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+                                        } else {
+                                            const hour = parseInt(timeStr);
+                                            return `${hour.toString().padStart(2, '0')}:00`;
+                                        }
+                                    },
+                                    label: function (context) {
+                                        const datasetLabel = context.dataset.label || '';
+                                        const value = context.parsed.y;
+                                        if (value === null || value === undefined) return '';
+                                        return datasetLabel + ': ' + value.toFixed(2) + ' c/kWh';
+                                    },
+                                    footer: function (context) {
+                                        const index = context[0].dataIndex;
+                                        const row = validData[index];
+                                        if (!row) return '';
+                                        const [, lowPrice, mediumPrice, highPrice, marginPrice] = row;
+                                        const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
+                                        const totalPrice = spotPrice + (marginPrice || 0);
+                                        return 'Total: ' + totalPrice.toFixed(2) + ' c/kWh';
+                                    }
+                                }
+                            },
+                            annotation: {
+                                annotations: annotations
+                            }
+                        },
+                        scales: {
+                            x: {
+                                stacked: true,
+                                display: true,
+                                barPercentage: (isMobile || isTablet) ? 0.95 : 0.90,
+                                categoryPercentage: 1.0,
+                                ticks: {
+                                    color: data.granularity === 'quarter_hour' ? 'transparent' : 'white',
+                                    font: {
+                                        size: isMobile ? 10 : (isTablet ? 14 : 12)
+                                    },
+                                    callback: function (value, index) {
+                                        // For quarter-hour, show only hours (0-23) at every 4th position
+                                        if (data.granularity === 'quarter_hour') {
+                                            if (index % 4 === 0) {
+                                                return Math.floor(index / 4).toString();
+                                            }
+                                            return '';
+                                        }
+                                        return value.toString();
+                                    },
+                                    maxRotation: 0,
+                                    minRotation: 0
+                                },
+                                grid: {
+                                    display: false
+                                }
+                            },
+                            y: {
+                                stacked: true,
+                                min: minPrice,
+                                max: maxPrice,
+                                ticks: {
+                                    color: 'white',
+                                    font: {
+                                        size: isMobile ? 12 : (isTablet ? 14 : 12)
+                                    },
+                                    stepSize: 1,
+                                    callback: function (value) {
+                                        return value % 5 === 0 ? value : '';
+                                    }
+                                },
+                                grid: {
+                                    display: false
+                                }
+                            }
+                        },
+                        interaction: {
+                            mode: 'index',
+                            intersect: false
+                        },
+                        animation: {
+                            duration: 0
+                        }
+                    }
+                };
+
+                // Create chart
+                const chart = new Chart(chartElement, chartConfig);
+
+                // Store chart instance and metadata
+                chartElement._chartInstance = chart;
+                chartElement._validData = validData;
+                chartElement._granularity = data.granularity;
+                chartElement._originalPriceRange = {
+                    minPrice: minPrice,
+                    maxPrice: maxPrice
+                };
+                chartElement._tooltips = tooltips;
+
+                // Set up now line timer for today's chart
+                if (date === 'today') {
+                    startNowLineTimer(chart, chartElement, validData, data.granularity);
                     if (window.updateCurrentPrice) {
                         window.updateCurrentPrice();
                     }
                 }
 
-                // Overlay 0–23 labels on quarter-hour redraw
-                if ((chartElement._granularity || 'hour') === 'quarter_hour') {
-                    try {
-                        const svg = chartElement.querySelector('svg');
-                        if (svg && chartElement._chartInstance) {
-                            // Hide native X-axis labels (0–95)
-                            const textElements = svg.querySelectorAll('text');
-                            let maxY = -Infinity;
-                            const candidates = [];
-                            textElements.forEach(textElement => {
-                                const t = textElement.textContent.trim();
-                                if (/^\d+$/.test(t)) {
-                                    const val = parseInt(t);
-                                    if (val >= 0 && val <= 95) {
-                                        const rect = textElement.getBoundingClientRect();
-                                        const chartRect = chartElement.getBoundingClientRect();
-                                        const y = rect.top - chartRect.top;
-                                        const x = rect.left - chartRect.left;
-                                        maxY = Math.max(maxY, y);
-                                        candidates.push({ el: textElement, y, x });
-                                    }
-                                }
-                            });
-                            // Use chart layout to require labels be to the right of plot area
-                            let xAxisCandidates;
-                            try {
-                                const cli2 = chartElement._chartInstance.getChartLayoutInterface();
-                                const area2 = cli2 && cli2.getChartAreaBoundingBox ? cli2.getChartAreaBoundingBox() : null;
-                                if (area2) {
-                                    xAxisCandidates = candidates.filter(c => Math.abs(c.y - maxY) < 10 && c.x > area2.left + 10);
-                                } else {
-                                    xAxisCandidates = candidates.filter(c => Math.abs(c.y - maxY) < 10);
-                                }
-                            } catch (e) {
-                                xAxisCandidates = candidates.filter(c => Math.abs(c.y - maxY) < 10);
-                            }
-                            xAxisCandidates.forEach(c => { c.el.style.display = 'none'; });
-
-                            // Remove previous overlay labels
-                            svg.querySelectorAll('.unified-hour-label').forEach(n => n.remove());
-
-                            // Use chart layout interface to get precise bar positions
-                            const cli = chartElement._chartInstance.getChartLayoutInterface();
-                            const area = cli.getChartAreaBoundingBox();
-                            const labelY = area.top + area.height + 12;
-
-                            // Calculate spacing between bar groups
-                            // getXLocation returns the center of the bar group
-                            const group0Center = cli.getXLocation(0);
-                            const group1Center = cli.getXLocation(4); // Next hour group
-                            const groupSpacing = group1Center - group0Center;
-
-                            // Calculate group width based on groupWidth percentage
-                            const groupWidthPercent = (isMobile || isTablet) ? 0.95 : 0.90;
-                            const groupWidth = groupSpacing * groupWidthPercent;
-
-                            // For each hour, get the center of the first bar group (hour * 4)
-                            // Then calculate left edge: center - (groupWidth / 2)
-                            for (let hour = 0; hour < 24; hour++) {
-                                const dataIndex = hour * 4; // First bar of each hour group
-                                const groupCenterX = cli.getXLocation(dataIndex);
-                                const xPos = groupCenterX - (groupWidth / 2);
-
-                                const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                                lbl.textContent = hour.toString();
-                                lbl.setAttribute('x', xPos.toString());
-                                lbl.setAttribute('y', labelY.toString());
-                                lbl.setAttribute('text-anchor', 'start');
-                                lbl.setAttribute('font-family', 'Arial, sans-serif');
-                                lbl.setAttribute('font-size', (isMobile ? '12' : '12'));
-                                lbl.setAttribute('fill', 'white');
-                                lbl.setAttribute('class', 'unified-hour-label');
-                                svg.appendChild(lbl);
-                            }
+                // Handle window resize
+                let resizeTimer;
+                window.addEventListener('resize', () => {
+                    clearTimeout(resizeTimer);
+                    resizeTimer = setTimeout(() => {
+                        if (chartElement._chartInstance) {
+                            chartElement._chartInstance.resize();
                         }
-                    } catch (e) {
-                        console.warn('Overlay labels on redraw failed:', e);
-                    }
-                }
-            }, 100);
-
-            return;
-        }
-
-        console.log('Creating chart for:', date, 'margin:', margin);
-
-
-        function drawChart() {
-            // Convert date to proper format for API
-            // Let the server handle timezone conversion - just send today/tomorrow as strings
-            let dateStr;
-            if (date === 'today') {
-                dateStr = 'today';
-                console.log('Today chart requesting: today');
-            } else if (date === 'tomorrow') {
-                dateStr = 'tomorrow';
-                console.log('Tomorrow chart requesting: tomorrow');
-            } else {
-                dateStr = date;
-            }
-
-            fetch(`/api/chart-data?date_str=${dateStr}&margin=${margin}`)
-                .then(response => response.json())
-                .then(data => {
-                    console.log('Chart data received for', date, ':', data);
-
-                    // Track when this chart's data was fetched with metadata
-                    const fetchTime = Date.now();
-                    const fetchDate = new Date(fetchTime);
-
-                    if (window.chartDataTimestamps) {
-                        window.chartDataTimestamps[date] = fetchTime;
-                        console.log(`Updated ${date} chart data timestamp:`, fetchDate.toLocaleTimeString());
-                    }
-
-                    if (window.chartDataMetadata) {
-                        window.chartDataMetadata[date] = {
-                            fetchedDate: fetchDate.toDateString(),
-                            fetchedHour: fetchDate.getHours()
-                        };
-                        console.log(`Updated ${date} chart metadata:`, window.chartDataMetadata[date]);
-                    }
-                    console.log('Y-axis range:', data.minPrice, 'to', data.maxPrice);
-                    console.log('First few data rows:', data.data.slice(0, 3));
-                    console.log('Viewport width:', window.innerWidth, 'isMobile:', window.innerWidth <= 768);
-
-                    // Update date string with localized format
-                    // Re-fetch dateStringEl in case DOM was updated (for localization)
-                    const currentDateStringEl = document.getElementById(dateStringId);
-                    if (currentDateStringEl) {
-                        let formattedDate;
-                        console.log('Date localization - dateIso:', data.dateIso, 'dateString:', data.dateString);
-                        if (data.dateIso) {
-                            // Parse ISO date and format using browser's locale
-                            // ISO format is YYYY-MM-DD, so we can parse it directly
-                            const dateObj = new Date(data.dateIso);
-                            if (!isNaN(dateObj.getTime())) {
-                                // Format weekday and date separately to handle Finnish case correctly
-                                const dateFormatter = new Intl.DateTimeFormat(undefined, {
-                                    weekday: 'long',
-                                    year: 'numeric',
-                                    month: 'numeric',
-                                    day: 'numeric'
-                                });
-                                let dateStr = dateFormatter.format(dateObj);
-
-                                // For Finnish, fix weekday case: remove "na" suffix (inessive -> nominative)
-                                // e.g., "maanantaina" -> "maanantai", "tiistaina" -> "tiistai", etc.
-                                const lang = navigator.language.split('-')[0];
-                                if (lang === 'fi') {
-                                    const weekdays = {
-                                        'maanantaina': 'maanantai',
-                                        'tiistaina': 'tiistai',
-                                        'keskiviikkona': 'keskiviikko',
-                                        'torstaina': 'torstai',
-                                        'perjantaina': 'perjantai',
-                                        'lauantaina': 'lauantai',
-                                        'sunnuntaina': 'sunnuntai'
-                                    };
-                                    for (const [inessive, nominative] of Object.entries(weekdays)) {
-                                        if (dateStr.toLowerCase().includes(inessive)) {
-                                            dateStr = dateStr.replace(new RegExp(inessive, 'gi'), nominative);
-                                            break;
-                                        }
-                                    }
-                                }
-                                formattedDate = dateStr;
-                            } else {
-                                // If parsing failed, try with time component
-                                const dateObj2 = new Date(data.dateIso + 'T00:00:00');
-                                if (!isNaN(dateObj2.getTime())) {
-                                    const dateFormatter = new Intl.DateTimeFormat(undefined, {
-                                        weekday: 'long',
-                                        year: 'numeric',
-                                        month: 'numeric',
-                                        day: 'numeric'
-                                    });
-                                    let dateStr = dateFormatter.format(dateObj2);
-
-                                    // For Finnish, fix weekday case
-                                    const lang = navigator.language.split('-')[0];
-                                    if (lang === 'fi') {
-                                        const weekdays = {
-                                            'maanantaina': 'maanantai',
-                                            'tiistaina': 'tiistai',
-                                            'keskiviikkona': 'keskiviikko',
-                                            'torstaina': 'torstai',
-                                            'perjantaina': 'perjantai',
-                                            'lauantaina': 'lauantai',
-                                            'sunnuntaina': 'sunnuntai'
-                                        };
-                                        for (const [inessive, nominative] of Object.entries(weekdays)) {
-                                            if (dateStr.toLowerCase().includes(inessive)) {
-                                                dateStr = dateStr.replace(new RegExp(inessive, 'gi'), nominative);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    formattedDate = dateStr;
-                                } else {
-                                    // Fallback to server format if parsing fails
-                                    formattedDate = data.dateString;
-                                }
-                            }
-                        } else {
-                            // Fallback to server format if dateIso not available
-                            // But try to parse the dateString to localize it
-                            if (data.dateString) {
-                                // Try to parse the dateString format (e.g., "Sunday 11/02/2025")
-                                // Extract the date part (MM/DD/YYYY)
-                                const dateMatch = data.dateString.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-                                if (dateMatch) {
-                                    const [, month, day, year] = dateMatch;
-                                    const dateObj = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-                                    if (!isNaN(dateObj.getTime())) {
-                                        const dateFormatter = new Intl.DateTimeFormat(undefined, {
-                                            weekday: 'long',
-                                            year: 'numeric',
-                                            month: 'numeric',
-                                            day: 'numeric'
-                                        });
-                                        let dateStr = dateFormatter.format(dateObj);
-
-                                        // For Finnish, fix weekday case
-                                        const lang = navigator.language.split('-')[0];
-                                        if (lang === 'fi') {
-                                            const weekdays = {
-                                                'maanantaina': 'maanantai',
-                                                'tiistaina': 'tiistai',
-                                                'keskiviikkona': 'keskiviikko',
-                                                'torstaina': 'torstai',
-                                                'perjantaina': 'perjantai',
-                                                'lauantaina': 'lauantai',
-                                                'sunnuntaina': 'sunnuntai'
-                                            };
-                                            for (const [inessive, nominative] of Object.entries(weekdays)) {
-                                                if (dateStr.toLowerCase().includes(inessive)) {
-                                                    dateStr = dateStr.replace(new RegExp(inessive, 'gi'), nominative);
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        formattedDate = dateStr;
-                                    } else {
-                                        formattedDate = data.dateString;
-                                    }
-                                } else {
-                                    formattedDate = data.dateString;
-                                }
-                            } else {
-                                formattedDate = '';
-                            }
-                        }
-                        currentDateStringEl.textContent = ` - ${formattedDate}`;
-                    }
-
-                    // Handle case where no data is available
-                    if (!data.data || data.data.length === 0) {
-                        chartElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">No data available for this date</div>';
-                        return;
-                    }
-
-                    // Create Google Charts data table
-                    const chartData = new google.visualization.DataTable();
-                    chartData.addColumn('string', 'Time');
-                    chartData.addColumn('number', 'Low Price');
-                    chartData.addColumn({ type: 'string', role: 'tooltip', p: { html: true } }); // Tooltip for Low Price
-                    chartData.addColumn('number', 'Medium Price');
-                    chartData.addColumn({ type: 'string', role: 'tooltip', p: { html: true } }); // Tooltip for Medium Price
-                    chartData.addColumn('number', 'High Price');
-                    chartData.addColumn({ type: 'string', role: 'tooltip', p: { html: true } }); // Tooltip for High Price
-                    chartData.addColumn('number', 'Margin');
-                    chartData.addColumn({ type: 'string', role: 'tooltip', p: { html: true } }); // Tooltip for Margin
-
-                    // Validate data before adding rows and add custom tooltips
-                    const validData = data.data.filter(row => Array.isArray(row) && row.length === 5);
-                    if (validData.length === 0) {
-                        chartElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">Invalid data format received</div>';
-                        return;
-                    }
-
-                    // Process data to add custom tooltips for each series
-                    const processedData = validData.map(row => {
-                        const [timeStr, lowPrice, mediumPrice, highPrice, marginPrice] = row;
-
-                        // Calculate total spot price (sum of low + medium + high)
-                        const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
-                        const totalPrice = spotPrice + (marginPrice || 0);
-
-                        // Format time - timeStr is either hour index (hourly) or interval index (15-minute)
-                        let timeFormatted;
-                        if (data.granularity === 'quarter_hour') {
-                            // 15-minute data uses sequential indices (0-95), convert to HH:MM
-                            const intervalIndex = parseInt(timeStr);
-                            const hour = Math.floor(intervalIndex / 4);
-                            const quarter = intervalIndex % 4;
-                            const minute = quarter * 15;
-                            timeFormatted = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-                        } else {
-                            // Convert hour number to HH:00 format for hourly data
-                            const hour = parseInt(timeStr);
-                            timeFormatted = `${hour.toString().padStart(2, '0')}:00`;
-                        }
-
-                        // Create a comprehensive tooltip that shows all components
-                        const createTooltip = () => {
-                            let tooltipContent = `
-              <div style="padding: 8px; font-family: Arial, sans-serif; font-size: 13px; line-height: 1.4;">
-                <div style="font-weight: bold; margin-bottom: 4px; color: #333;">${timeFormatted}</div>
-            `;
-
-                            // Add each price component if it has a value (including negative values)
-                            if (lowPrice !== 0 && lowPrice !== null && lowPrice !== undefined) {
-                                tooltipContent += `<div style="color: #666;">Price: <strong>${lowPrice.toFixed(2)} c/kWh</strong></div>`;
-                            }
-                            if (mediumPrice !== 0 && mediumPrice !== null && mediumPrice !== undefined) {
-                                tooltipContent += `<div style="color: #666;">Price: <strong>${mediumPrice.toFixed(2)} c/kWh</strong></div>`;
-                            }
-                            if (highPrice !== 0 && highPrice !== null && highPrice !== undefined) {
-                                tooltipContent += `<div style="color: #666;">Price: <strong>${highPrice.toFixed(2)} c/kWh</strong></div>`;
-                            }
-
-                            // Always show margin
-                            tooltipContent += `<div style="color: #666;">Margin: <strong>${(marginPrice || 0).toFixed(2)} c/kWh</strong></div>`;
-
-                            // Add total with separator
-                            tooltipContent += `
-                <div style="border-top: 1px solid #ddd; margin-top: 4px; padding-top: 4px; color: #333;">
-                  <strong>Total: ${totalPrice.toFixed(2)} c/kWh</strong>
-                </div>
-              </div>
-            `;
-
-                            return tooltipContent.trim();
-                        };
-
-                        const tooltip = createTooltip();
-
-                        // Return row with tooltip for each series:
-                        // [Time, LowPrice, LowTooltip, MediumPrice, MediumTooltip, HighPrice, HighTooltip, Margin, MarginTooltip]
-                        // Use null instead of 0 to make Google Charts skip zero segments entirely
-                        // Note: Prices can be negative, so only null out if exactly zero
-                        return [
-                            timeStr,
-                            lowPrice !== 0 ? lowPrice : null, tooltip,        // Low price + tooltip (null only if exactly zero)
-                            mediumPrice !== 0 ? mediumPrice : null, tooltip,  // Medium price + tooltip (null only if exactly zero)
-                            highPrice !== 0 ? highPrice : null, tooltip,      // High price + tooltip (null only if exactly zero)
-                            marginPrice !== 0 ? marginPrice : null, tooltip   // Margin + tooltip (null only if exactly zero)
-                        ];
-                    });
-
-                    chartData.addRows(processedData);
-
-                    // Responsive chart options based on viewport width
-                    const isMobile = window.innerWidth <= 900;
-                    const isTablet = window.innerWidth > 900 && window.innerWidth <= 1200;
-                    // Everything above 900px uses the same side-by-side layout
-
-                    const options = {
-                        title: '',
-                        hAxis: {
-                            title: '',  // Remove axis title to save space
-                            format: 'none',
-                            textStyle: {
-                                fontSize: isMobile ? 10 : (isTablet ? 14 : 12),
-                                color: (data.granularity === 'quarter_hour') ? 'black' : 'white' // Hide native 0-95 on 15-min
-                            },
-                            titleTextStyle: {
-                                color: 'white',
-                                fontSize: isMobile ? 10 : (isTablet ? 14 : 12)
-                            },
-                            slantedText: false,
-                            gridlines: {
-                                count: 24  // Always use 24 gridlines
-                            },
-                            // Custom ticks for 15-minute data to show only hours immediately
-                            ticks: (() => {
-                                const granularity = data.granularity || 'hour';
-                                if (granularity === 'quarter_hour') {
-                                    const ticks = [];
-                                    for (let hour = 0; hour < 24; hour++) {
-                                        const position = hour * 4;
-                                        ticks.push({ v: position.toString(), f: hour.toString() });
-                                    }
-                                    return ticks;
-                                } else {
-                                    return undefined;
-                                }
-                            })(),
-                            count: data.granularity === 'quarter_hour' ? undefined : 24,
-                            maxAlternation: 1,
-                            // Force single row display and optimize spacing
-                            textPosition: 'out'
-                        },
-                        vAxis: {
-                            title: '',  // Remove Y-axis title completely to save space
-                            minValue: data.minPrice,
-                            maxValue: Math.max(15, data.maxPrice),  // Ensure minimum of 15 cents
-                            viewWindow: {
-                                min: data.minPrice,
-                                max: Math.max(15, data.maxPrice)      // Ensure minimum of 15 cents
-                            },
-                            ticks: (() => {
-                                const ticks = [];
-                                const maxValue = Math.max(15, data.maxPrice);  // Use the same enforced maximum
-                                // Add all ticks (1-cent intervals) with custom formatting
-                                for (let i = data.minPrice; i <= maxValue; i += 1) {
-                                    if (i % 5 === 0) {
-                                        // Major tick - show number label
-                                        ticks.push({ v: i, f: i.toString() });
-                                    } else {
-                                        // Minor tick - no label (empty string)
-                                        ticks.push({ v: i, f: '' });
-                                    }
-                                }
-                                return ticks;
-                            })(),
-                            gridlines: {
-                                count: 0, // Disable automatic gridlines completely - use only custom ones
-                                color: 'transparent'
-                            },
-                            minorGridlines: {
-                                count: 0 // Disable minor gridlines
-                            },
-                            textStyle: {
-                                fontSize: isMobile ? 12 : (isTablet ? 14 : 12), // Larger font for tablets
-                                color: 'white'
-                            },
-                            titleTextStyle: {
-                                color: 'white',
-                                fontSize: isMobile ? 12 : (isTablet ? 14 : 12)
-                            }
-                        },
-                        isStacked: true,
-                        legend: 'none',
-                        width: '100%',
-                        height: '100%',
-                        chartArea: {
-                            width: isMobile ? '75%' : '90%', // Reduce width to make room for Y-axis labels
-                            height: isMobile ? '85%' : (isTablet ? '45%' : '65%'),  // Further reduced height for tablets to prevent x-axis overflow
-                            top: isMobile ? 5 : 15,
-                            left: isMobile ? 20 : 30, // Reduced left margin to bring Y-axis closer
-                            right: isMobile ? 10 : 5,
-                            bottom: isMobile ? 15 : (isTablet ? 70 : 40)  // Increased bottom space for tablets
-                        },
-                        backgroundColor: 'black',
-                        series: {
-                            0: { color: '#2ecc71' },  // green for low prices
-                            1: { color: '#f1c40f' },  // yellow for medium prices
-                            2: { color: '#e74c3c' },  // red for high prices
-                            3: { color: '#666666' }   // gray for margin
-                        },
-                        bar: {
-                            groupWidth: (isMobile || isTablet) ? '95%' : '90%'
-                        },
-                        tooltip: {
-                            isHtml: true,
-                            textStyle: {
-                                fontSize: isMobile ? 12 : 14,
-                                color: 'black'
-                            }
-                        }
-                    };
-
-                    try {
-                        const chart = new google.visualization.ColumnChart(chartElement);
-
-                        // Cache chart instance, data, and price range for future redraws
-                        chartElement._chartInstance = chart;
-                        chartElement._chartData = chartData;
-                        chartElement._validData = validData; // Store for now line redrawing
-                        chartElement._granularity = data.granularity; // Store granularity for redrawing
-                        chartElement._originalPriceRange = {
-                            minPrice: data.minPrice,
-                            maxPrice: data.maxPrice
-                        };
-
-                        // Add ready event listener to draw major gridlines and today's "now" line
-                        google.visualization.events.addListener(chart, 'ready', function () {
-                            // Draw major gridlines (every 5 cents) - brighter than minor ones
-                            drawMajorGridlines(chart, chartElement, data.minPrice, data.maxPrice);
-
-                            // Draw hourly vertical lines
-                            drawHourlyVerticalLines(chart, chartElement, data.granularity || 'hour');
-
-                            if (date === 'today') {
-                                addNowLine(chart, chartElement, validData);
-                                // Set up timer to update the now line every minute
-                                startNowLineTimer(chart, chartElement, validData);
-                                // Update current price display
-                                if (window.updateCurrentPrice) {
-                                    window.updateCurrentPrice();
-                                }
-                            }
-                        });
-
-                        // Add post-processing to overlay clean 0-23 labels for 15-minute data
-                        if (data.granularity === 'quarter_hour') {
-                            google.visualization.events.addListener(chart, 'ready', function () {
-                                setTimeout(() => {
-                                    try {
-                                        const svg = chartElement.querySelector('svg');
-                                        if (svg) {
-                                            const textElements = svg.querySelectorAll('text');
-                                            const candidates = [];
-
-                                            // Collect potential X-axis labels (0..95) positions
-                                            textElements.forEach(textElement => {
-                                                const text = textElement.textContent.trim();
-                                                if (/^\d+$/.test(text)) {
-                                                    const value = parseInt(text);
-                                                    if (value >= 0 && value <= 95) {
-                                                        const rect = textElement.getBoundingClientRect();
-                                                        const chartRect = chartElement.getBoundingClientRect();
-                                                        candidates.push({
-                                                            element: textElement,
-                                                            value: value,
-                                                            x: rect.left - chartRect.left,
-                                                            y: rect.top - chartRect.top
-                                                        });
-                                                    }
-                                                }
-                                            });
-
-                                            if (candidates.length > 0) {
-                                                const maxY = Math.max(...candidates.map(c => c.y));
-                                                // Use chart layout to determine left boundary of plot area
-                                                let xAxisCandidates;
-                                                try {
-                                                    const cli2 = chartElement._chartInstance.getChartLayoutInterface();
-                                                    const area2 = cli2 && cli2.getChartAreaBoundingBox ? cli2.getChartAreaBoundingBox() : null;
-                                                    if (area2) {
-                                                        xAxisCandidates = candidates.filter(c => Math.abs(c.y - maxY) < 10 && c.x > area2.left + 10);
-                                                    } else {
-                                                        xAxisCandidates = candidates.filter(c => Math.abs(c.y - maxY) < 10);
-                                                    }
-                                                } catch (e) {
-                                                    xAxisCandidates = candidates.filter(c => Math.abs(c.y - maxY) < 10);
-                                                }
-
-                                                // Hide native labels (already black, but ensure hidden)
-                                                xAxisCandidates.forEach(c => {
-                                                    c.element.style.display = 'none';
-                                                });
-
-                                                // Find bar rectangles to position labels
-                                                const bars = svg.querySelectorAll('rect');
-                                                const barPositions = [];
-                                                const isMobile = window.innerWidth <= 900;
-                                                const isTablet = window.innerWidth > 900 && window.innerWidth <= 1200;
-                                                const maxBarWidth = isMobile ? 20 : (isTablet ? 30 : 50);
-                                                // Don't filter by minBarX - let chartArea.left handle positioning
-
-                                                bars.forEach(bar => {
-                                                    const x = parseFloat(bar.getAttribute('x') || 0);
-                                                    const width = parseFloat(bar.getAttribute('width') || 0);
-                                                    const height = parseFloat(bar.getAttribute('height') || 0);
-                                                    const fill = bar.getAttribute('fill') || '';
-                                                    // Filter for price bars: must have width, reasonable size, positive height, and colored fill
-                                                    if (width > 0 && width < maxBarWidth && height > 5 && fill && fill !== '#ffffff' && fill !== '#000000' && fill !== 'transparent') {
-                                                        barPositions.push({ x, width, centerX: x + width / 2, height, fill });
-                                                    }
-                                                });
-
-                                                barPositions.sort((a, b) => a.x - b.x);
-                                                const uniqueBarPositions = [];
-                                                let lastX = -1;
-                                                barPositions.forEach(bar => {
-                                                    if (Math.abs(bar.x - lastX) > 0.1) {
-                                                        uniqueBarPositions.push(bar);
-                                                        lastX = bar.x;
-                                                    }
-                                                });
-
-                                                // Compute label Y baseline
-                                                let labelY = Math.round(maxY) + 15;
-                                                if (xAxisCandidates.length > 1) {
-                                                    const reference = xAxisCandidates[1];
-                                                    labelY = reference.y + 15;
-                                                }
-
-                                                // Create 24 hour labels positioned at left edge of every 4th bar
-                                                for (let hour = 0; hour < 24; hour++) {
-                                                    const barIndex = hour * 4;
-                                                    let xPos;
-                                                    if (barIndex < uniqueBarPositions.length) {
-                                                        xPos = uniqueBarPositions[barIndex].x;
-                                                    } else if (uniqueBarPositions.length > 1) {
-                                                        const lastBarX = uniqueBarPositions[uniqueBarPositions.length - 1].x;
-                                                        const spacing = (uniqueBarPositions[uniqueBarPositions.length - 1].x - uniqueBarPositions[0].x) / (uniqueBarPositions.length - 1);
-                                                        xPos = lastBarX + (barIndex - uniqueBarPositions.length + 1) * spacing;
-                                                    } else {
-                                                        xPos = 20 + hour * 30; // fallback
-                                                    }
-
-                                                    const newLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                                                    newLabel.textContent = hour.toString();
-                                                    newLabel.setAttribute('x', xPos.toString());
-                                                    newLabel.setAttribute('y', labelY.toString());
-                                                    newLabel.setAttribute('text-anchor', 'start');
-                                                    newLabel.setAttribute('font-family', 'Arial, sans-serif');
-                                                    newLabel.setAttribute('font-size', (isMobile ? '12' : (isTablet ? '14' : '12')));
-                                                    newLabel.setAttribute('fill', 'white');
-                                                    newLabel.setAttribute('class', 'unified-hour-label');
-                                                    svg.appendChild(newLabel);
-                                                }
-                                            }
-                                        }
-                                    } catch (error) {
-                                        console.error('Error creating hour labels:', error);
-                                    }
-                                }, 0);
-                            });
-                        }
-
-                        chart.draw(chartData, options);
-                        console.log('Chart created and cached for future redraws');
-                    } catch (error) {
-                        console.error('Error creating or drawing chart:', error);
-                        chartElement.innerHTML = '<div style="color: white; padding: 20px;">Error creating chart: ' + error.message + '</div>';
-                    }
-                })
-                .catch(error => {
-                    console.error('Error fetching chart data:', error);
-                    chartElement.innerHTML = '<div style="color: white; padding: 20px;">Error loading chart data</div>';
+                    }, 250);
                 });
-        }
 
-        function startNowLineTimer(chart, chartElement, validData) {
-            // Clear any existing timer
+                console.log('Chart created successfully');
+            })
+            .catch(error => {
+                console.error('Error fetching chart data:', error);
+                chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px;">Error loading chart data</div>';
+            });
+
+        function startNowLineTimer(chart, chartElement, validData, granularity) {
+            // Clear existing timer
             if (chartElement._nowLineTimer) {
                 clearInterval(chartElement._nowLineTimer);
+                clearTimeout(chartElement._nowLineTimer);
             }
 
-            // Function to calculate milliseconds until next 15-minute boundary
-            function msUntilNext15MinBoundary() {
+            function updateNowLine() {
+                if (document.hidden) return;
+
                 const now = new Date();
+                const currentHour = now.getHours();
                 const currentMinutes = now.getMinutes();
-                const currentSeconds = now.getSeconds();
-                const currentMs = now.getMilliseconds();
+                let dataPointIndex = -1;
 
-                // Find next 15-minute boundary (0, 15, 30, 45)
-                const nextBoundary = Math.ceil(currentMinutes / 15) * 15;
-                const nextBoundaryMinutes = nextBoundary === 60 ? 0 : nextBoundary;
+                if (granularity === 'quarter_hour') {
+                    const quarter = Math.floor(currentMinutes / 15);
+                    const intervalIndex = currentHour * 4 + quarter;
+                    dataPointIndex = validData.findIndex(row => row[0] === intervalIndex.toString());
+                } else {
+                    dataPointIndex = validData.findIndex(row => row[0] === currentHour.toString());
+                }
 
-                // Calculate milliseconds until that boundary
-                const minutesUntilBoundary = nextBoundaryMinutes === 0 ?
-                    (60 - currentMinutes) : (nextBoundaryMinutes - currentMinutes);
-                const msUntilBoundary = (minutesUntilBoundary * 60 * 1000) - (currentSeconds * 1000) - currentMs;
-
-                return msUntilBoundary;
+                if (dataPointIndex >= 0 && chartElement._chartInstance) {
+                    const annotations = chartElement._chartInstance.options.plugins.annotation.annotations;
+                    // Remove existing now line
+                    const nowLineIndex = annotations.x.findIndex(a => a.borderColor === '#ff9900');
+                    if (nowLineIndex >= 0) {
+                        annotations.x.splice(nowLineIndex, 1);
+                    }
+                    // Add new now line
+                    annotations.x.push({
+                        type: 'line',
+                        xMin: dataPointIndex,
+                        xMax: dataPointIndex,
+                        borderColor: '#ff9900',
+                        borderWidth: 3,
+                        borderDash: [4, 3],
+                        opacity: 0.9
+                    });
+                    chartElement._chartInstance.update('none');
+                }
             }
 
-            // Function to set up the next timer
-            function scheduleNextUpdate() {
-                const msUntilBoundary = msUntilNext15MinBoundary();
-                console.log(`Scheduling next now line update in ${Math.round(msUntilBoundary / 1000)} seconds`);
+            // Calculate ms until next 15-minute boundary
+            function msUntilNext15Min() {
+                const now = new Date();
+                const minutes = now.getMinutes();
+                const seconds = now.getSeconds();
+                const ms = now.getMilliseconds();
+                const nextBoundary = Math.ceil(minutes / 15) * 15;
+                const minutesUntil = nextBoundary === 60 ? (60 - minutes) : (nextBoundary - minutes);
+                return (minutesUntil * 60 * 1000) - (seconds * 1000) - ms;
+            }
 
+            function scheduleNext() {
+                const ms = msUntilNext15Min();
                 chartElement._nowLineTimer = setTimeout(() => {
-                    updateNowLine(chart, chartElement, validData);
-                    // Schedule the next update for 15 minutes later
-                    chartElement._nowLineTimer = setInterval(() => {
-                        updateNowLine(chart, chartElement, validData);
-                    }, 15 * 60 * 1000); // 15 minutes
-                }, msUntilBoundary);
+                    updateNowLine();
+                    chartElement._nowLineTimer = setInterval(updateNowLine, 15 * 60 * 1000);
+                }, ms);
             }
 
-            // Start the precision timing
-            scheduleNextUpdate();
+            scheduleNext();
 
-            // Add visibility change listener to update now line when tab becomes visible
             const visibilityHandler = () => {
                 if (!document.hidden) {
-                    console.log('Tab became visible - updating now line immediately');
-                    updateNowLine(chart, chartElement, validData);
-
-                    // Reschedule timer to maintain precision after visibility change
+                    updateNowLine();
                     if (chartElement._nowLineTimer) {
                         clearInterval(chartElement._nowLineTimer);
                         clearTimeout(chartElement._nowLineTimer);
                     }
-                    scheduleNextUpdate();
+                    scheduleNext();
                 }
             };
 
-            // Store handler reference for cleanup
             chartElement._visibilityHandler = visibilityHandler;
             document.addEventListener('visibilitychange', visibilityHandler);
 
-            // Add focus/blur listeners for additional reliability on mobile
             const focusHandler = () => {
-                console.log('Window gained focus - updating now line immediately');
-                updateNowLine(chart, chartElement, validData);
-
-                // Reschedule timer to maintain precision after focus change
+                updateNowLine();
                 if (chartElement._nowLineTimer) {
                     clearInterval(chartElement._nowLineTimer);
                     clearTimeout(chartElement._nowLineTimer);
                 }
-                scheduleNextUpdate();
+                scheduleNext();
             };
 
             chartElement._focusHandler = focusHandler;
             window.addEventListener('focus', focusHandler);
-
-            // Add page show event for better mobile reliability (iOS Safari, Android Chrome)
-            const pageShowHandler = (event) => {
-                // Only trigger if coming from cache (persisted = true) or after being hidden
-                if (event.persisted || document.wasHidden) {
-                    console.log('Page shown from cache or after being hidden - updating now line');
-                    updateNowLine(chart, chartElement, validData);
-
-                    // Reschedule timer for precision
-                    if (chartElement._nowLineTimer) {
-                        clearInterval(chartElement._nowLineTimer);
-                        clearTimeout(chartElement._nowLineTimer);
-                    }
-                    scheduleNextUpdate();
-                }
-                document.wasHidden = false;
-            };
-
-            const pageHideHandler = () => {
-                document.wasHidden = true;
-            };
-
-            chartElement._pageShowHandler = pageShowHandler;
-            chartElement._pageHideHandler = pageHideHandler;
-            window.addEventListener('pageshow', pageShowHandler);
-            window.addEventListener('pagehide', pageHideHandler);
-        }
-
-        function updateNowLine(chart, chartElement, validData) {
-            try {
-                // Only update if the document is visible (window is in foreground)
-                if (document.hidden) {
-                    console.log('Skipping now line update - document is hidden');
-                    return;
-                }
-
-                // Remove existing now lines
-                const existingLines = chartElement.querySelectorAll('.now-line');
-                existingLines.forEach(line => line.remove());
-
-                // Add new now line at current position
-                addNowLineInternal(chart, chartElement, validData);
-            } catch (error) {
-                console.error('Error updating now line:', error);
-            }
-        }
-
-        function drawMajorGridlines(chart, chartElement, minPrice, maxPrice) {
-            try {
-                console.log('drawMajorGridlines called with:', minPrice, 'to', maxPrice);
-
-                // Remove any existing custom gridlines to prevent duplicates
-                const existingLines = chartElement.querySelectorAll('.major-gridline, .minor-gridline, .custom-gridlines-group');
-                existingLines.forEach(line => line.remove());
-
-                const svgElement = chartElement.querySelector('svg');
-                if (!svgElement) {
-                    console.error('No SVG element found in chart');
-                    return;
-                }
-
-                const chartLayout = chart.getChartLayoutInterface();
-                const chartArea = chartLayout.getChartAreaBoundingBox();
-                if (!chartArea) {
-                    console.error('No chart area bounding box found');
-                    return;
-                }
-
-
-
-                // Create a group element for all gridlines to ensure proper z-order
-                const gridlinesGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-                gridlinesGroup.setAttribute('class', 'custom-gridlines-group');
-
-                // Draw all gridlines (1-cent intervals)
-                let majorCount = 0;
-                let minorCount = 0;
-
-
-
-                for (let price = minPrice; price <= maxPrice; price += 1) {
-                    try {
-                        const yPosition = chartLayout.getYLocation(price);
-                        const isMajor = price % 5 === 0;
-
-                        // Create horizontal line
-                        const gridLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                        gridLine.setAttribute('class', isMajor ? 'major-gridline' : 'minor-gridline');
-                        gridLine.setAttribute('x1', chartArea.left.toString());
-                        gridLine.setAttribute('y1', yPosition.toString());
-                        gridLine.setAttribute('x2', (chartArea.left + chartArea.width).toString());
-                        gridLine.setAttribute('y2', yPosition.toString());
-
-                        if (isMajor) {
-                            // Major gridlines - thick and bright to avoid anti-aliasing
-                            gridLine.setAttribute('stroke', '#aaaaaa');  // Bright gray for good visibility
-                            gridLine.setAttribute('stroke-width', '2');  // Thick enough to avoid anti-aliasing
-                            gridLine.setAttribute('opacity', '1.0');  // Full opacity
-                            gridLine.setAttribute('style', 'stroke: #aaaaaa !important; stroke-width: 2px !important; opacity: 1.0 !important;');
-                            gridLine.setAttribute('data-price', price.toString());  // Add data attribute for debugging
-
-                        } else {
-                            // Minor gridlines - thick enough to be consistent
-                            gridLine.setAttribute('stroke', '#666666');  // Medium gray
-                            gridLine.setAttribute('stroke-width', '1.5');  // Thick enough to avoid anti-aliasing
-                            gridLine.setAttribute('opacity', '0.7');  // Good opacity
-                            gridLine.setAttribute('style', 'stroke: #666666 !important; stroke-width: 1.5px !important; opacity: 0.7 !important;');
-
-                        }
-
-                        // Add gridline to the group
-                        gridlinesGroup.appendChild(gridLine);
-
-                        if (isMajor) majorCount++;
-                        else minorCount++;
-                    } catch (e) {
-                        // Skip if getYLocation fails for this price
-                        console.warn('Could not draw gridline for price:', price, e);
-                    }
-                }
-
-
-
-                // Insert gridlines before data bars but after background
-                // Find the first data element (usually a 'g' group containing bars)
-                const dataGroups = svgElement.querySelectorAll('g');
-                let dataGroup = null;
-
-                // Look for a group that contains rect elements (the chart bars)
-                for (let group of dataGroups) {
-                    if (group.querySelector('rect')) {
-                        dataGroup = group;
-                        break;
-                    }
-                }
-
-                if (dataGroup) {
-                    svgElement.insertBefore(gridlinesGroup, dataGroup);
-
-                } else {
-                    // Fallback: insert at the beginning but after defs
-                    let insertPoint = svgElement.firstChild;
-                    while (insertPoint && (insertPoint.tagName === 'defs' || insertPoint.tagName === 'rect')) {
-                        insertPoint = insertPoint.nextSibling;
-                    }
-
-                    if (insertPoint) {
-                        svgElement.insertBefore(gridlinesGroup, insertPoint);
-
-                    } else {
-                        svgElement.appendChild(gridlinesGroup);
-
-                    }
-                }
-
-
-            } catch (error) {
-                console.error('Error drawing gridlines:', error);
-            }
-        }
-
-        function drawHourlyVerticalLines(chart, chartElement, granularity) {
-            try {
-                console.log('drawHourlyVerticalLines called with granularity:', granularity);
-
-                // Remove any existing vertical lines to prevent duplicates
-                const existingLines = chartElement.querySelectorAll('.hourly-vertical-line');
-                existingLines.forEach(line => line.remove());
-
-                const svgElement = chartElement.querySelector('svg');
-                if (!svgElement) {
-                    console.error('No SVG element found in chart');
-                    return;
-                }
-
-                const chartLayout = chart.getChartLayoutInterface();
-                const chartArea = chartLayout.getChartAreaBoundingBox();
-                if (!chartArea) {
-                    console.error('No chart area bounding box found');
-                    return;
-                }
-
-                // Create a group element for all vertical lines
-                const verticalLinesGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-                verticalLinesGroup.setAttribute('class', 'hourly-vertical-lines-group');
-
-                // Draw vertical lines at every hour
-                // For hourly data: every data point (0-23)
-                // For 15-minute data: every 4th data point (0, 4, 8, ..., 92)
-                const hourStep = granularity === 'quarter_hour' ? 4 : 1;
-                const maxDataPoint = granularity === 'quarter_hour' ? 96 : 24;
-
-                for (let hour = 0; hour < 24; hour++) {
-                    const dataPointIndex = hour * hourStep;
-                    if (dataPointIndex < maxDataPoint) {
-                        try {
-                            const xPosition = chartLayout.getXLocation(dataPointIndex);
-
-                            // Create vertical line
-                            const verticalLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                            verticalLine.setAttribute('class', 'hourly-vertical-line');
-                            verticalLine.setAttribute('x1', xPosition.toString());
-                            verticalLine.setAttribute('y1', chartArea.top.toString());
-                            verticalLine.setAttribute('x2', xPosition.toString());
-                            verticalLine.setAttribute('y2', (chartArea.top + chartArea.height).toString());
-                            verticalLine.setAttribute('stroke', '#555555');  // Dark gray
-                            verticalLine.setAttribute('stroke-width', '1');  // Thin line
-                            verticalLine.setAttribute('opacity', '0.5');  // Semi-transparent
-                            verticalLine.setAttribute('style', 'stroke: #555555 !important; stroke-width: 1px !important; opacity: 0.5 !important;');
-                            verticalLine.setAttribute('data-hour', hour.toString());
-
-                            verticalLinesGroup.appendChild(verticalLine);
-                        } catch (e) {
-                            console.warn('Could not draw vertical line for hour:', hour, e);
-                        }
-                    }
-                }
-
-                // Insert vertical lines before data bars but after background
-                const dataGroups = svgElement.querySelectorAll('g');
-                let dataGroup = null;
-
-                for (let group of dataGroups) {
-                    if (group.querySelector('rect')) {
-                        dataGroup = group;
-                        break;
-                    }
-                }
-
-                if (dataGroup) {
-                    svgElement.insertBefore(verticalLinesGroup, dataGroup);
-                } else {
-                    let insertPoint = svgElement.firstChild;
-                    while (insertPoint && (insertPoint.tagName === 'defs' || insertPoint.tagName === 'rect')) {
-                        insertPoint = insertPoint.nextSibling;
-                    }
-
-                    if (insertPoint) {
-                        svgElement.insertBefore(verticalLinesGroup, insertPoint);
-                    } else {
-                        svgElement.appendChild(verticalLinesGroup);
-                    }
-                }
-
-                console.log('Hourly vertical lines drawn successfully');
-            } catch (error) {
-                console.error('Error drawing hourly vertical lines:', error);
-            }
-        }
-
-        function addNowLine(chart, chartElement, validData) {
-            // Initial draw - just call the internal function
-            addNowLineInternal(chart, chartElement, validData);
-        }
-
-        function addNowLineInternal(chart, chartElement, validData) {
-            try {
-                // Remove any existing now lines to prevent duplicates
-                const existingLines = chartElement.querySelectorAll('.now-line');
-                existingLines.forEach(line => line.remove());
-
-                // Get current time
-                const now = new Date();
-                const currentHour = now.getHours();
-                const currentMinutes = now.getMinutes();
-
-                // Find the SVG element in the chart
-                const svgElement = chartElement.querySelector('svg');
-                if (!svgElement) return;
-
-                // Use Google Charts' getChartLayoutInterface to get precise positioning
-                const chartLayout = chart.getChartLayoutInterface();
-                const chartArea = chartLayout.getChartAreaBoundingBox();
-
-                if (!chartArea) {
-                    console.warn('Could not get chart area bounding box');
-                    return;
-                }
-
-                // Find the data point index for the current time
-                let dataPointIndex = -1;
-                let currentTimeStr;
-
-                // Check if we have granularity info to determine time format
-                const granularity = chartElement._granularity || 'hour';
-                if (granularity === 'quarter_hour') {
-                    // For 15-minute data, find the current 15-minute interval
-                    // The line should be positioned at the beginning of the current interval
-                    const quarter = Math.floor(currentMinutes / 15);
-                    const intervalIndex = currentHour * 4 + quarter;
-                    currentTimeStr = intervalIndex.toString();
-                    dataPointIndex = validData.findIndex(row => row[0] === currentTimeStr);
-
-                    console.log(`Current time: ${currentHour}:${currentMinutes.toString().padStart(2, '0')}, interval: ${intervalIndex}, quarter: ${quarter}`);
-                } else {
-                    // For hourly data, use hour only
-                    currentTimeStr = currentHour.toString();
-                    dataPointIndex = validData.findIndex(row => row[0] === currentTimeStr);
-                }
-
-                let lineX;
-
-                if (dataPointIndex >= 0) {
-                    // Try to get the exact position using the data point index
-                    try {
-                        // Get the center position of the column for the current hour
-                        lineX = chartLayout.getXLocation(dataPointIndex);
-                    } catch (e) {
-                        console.warn('getXLocation failed, using fallback calculation');
-                        // Fallback calculation accounting for different groupWidth based on granularity
-                        const granularity = chartElement._granularity || 'hour';
-
-                        // Use standard calculation for both granularities
-                        const totalColumns = validData.length;
-                        const isMobile = window.innerWidth <= 900;
-                        const isTablet = window.innerWidth > 900 && window.innerWidth <= 1200;
-                        const groupWidth = (isMobile || isTablet) ? 0.95 : 0.90; // matches chart options (95% mobile/tablet, 90% desktop)
-                        const effectiveWidth = chartArea.width * groupWidth;
-                        const gapWidth = chartArea.width * (1 - groupWidth);
-                        const columnWidth = effectiveWidth / totalColumns;
-                        const gapPerColumn = gapWidth / (totalColumns + 1);
-
-                        lineX = chartArea.left + gapPerColumn + (dataPointIndex * (columnWidth + gapPerColumn)) + (columnWidth / 2);
-                    }
-                } else {
-                    // Time not found in data, calculate position accounting for gaps and actual bar positions
-                    const granularity = chartElement._granularity || 'hour';
-
-                    // Calculate position based on time, accounting for the data structure
-                    let approximateIndex;
-                    if (granularity === 'quarter_hour') {
-                        // For 15-minute data, position at the beginning of the current interval
-                        // No sub-interval positioning - line stays at interval start
-                        const quarter = Math.floor(currentMinutes / 15);
-                        approximateIndex = (currentHour * 4) + quarter;
-                    } else {
-                        // For hourly data, calculate approximate index in the 24-item array
-                        const minuteProgress = currentMinutes / 60;
-                        approximateIndex = currentHour + minuteProgress;
-                    }
-
-                    // Use standard spacing calculation
-                    const totalColumns = granularity === 'quarter_hour' ? 96 : 24;
-                    const isMobile = window.innerWidth <= 900;
-                    const isTablet = window.innerWidth > 900 && window.innerWidth <= 1200;
-                    const groupWidth = (isMobile || isTablet) ? 0.95 : 0.90; // matches chart options (95% mobile/tablet, 90% desktop)
-                    const effectiveWidth = chartArea.width * groupWidth;
-                    const gapWidth = chartArea.width * (1 - groupWidth);
-                    const columnWidth = effectiveWidth / totalColumns;
-                    const gapPerColumn = gapWidth / (totalColumns + 1);
-
-                    lineX = chartArea.left + gapPerColumn + (approximateIndex * (columnWidth + gapPerColumn));
-                }
-
-                // Create yellow line (thin and dotted for 15-minute bars)
-                const nowLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                nowLine.setAttribute('class', 'now-line');
-                nowLine.setAttribute('x1', lineX.toString());
-                nowLine.setAttribute('y1', '0'); // Start from very top of SVG
-                nowLine.setAttribute('x2', lineX.toString());
-                nowLine.setAttribute('y2', svgElement.getAttribute('height') || '100%'); // Extend to very bottom of SVG
-                nowLine.setAttribute('stroke', '#ff9900');
-                nowLine.setAttribute('stroke-width', '3');
-                nowLine.setAttribute('stroke-dasharray', '4,3');
-                nowLine.setAttribute('opacity', '0.9');
-
-                svgElement.appendChild(nowLine);
-
-                console.log('Now line positioned at time', currentTimeStr, 'data index', dataPointIndex, 'x-position', lineX);
-            } catch (error) {
-                console.error('Error adding now line:', error);
-            }
-        }
-
-        // Initialize chart
-        if (typeof google !== 'undefined' && google.charts) {
-            google.charts.load('current', { packages: ['corechart'] });
-            google.charts.setOnLoadCallback(drawChart);
-        } else {
-            // If Google Charts isn't loaded yet, wait for it
-            const checkGoogle = setInterval(() => {
-                if (typeof google !== 'undefined' && google.charts) {
-                    clearInterval(checkGoogle);
-                    google.charts.load('current', { packages: ['corechart'] });
-                    google.charts.setOnLoadCallback(drawChart);
-                }
-            }, 100);
         }
     };
 
-    // Execute the chart creation function immediately
-    window.createChart('{{ chart_date }}');
+    // Execute chart creation
+    if (typeof Chart !== 'undefined') {
+        window.createChart('{{ chart_date }}');
+    } else {
+        const checkChart = setInterval(() => {
+            if (typeof Chart !== 'undefined') {
+                clearInterval(checkChart);
+                window.createChart('{{ chart_date }}');
+            }
+        }, 100);
+    }
 </script>
