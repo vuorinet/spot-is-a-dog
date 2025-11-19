@@ -275,18 +275,33 @@
                             // Remove previous overlay labels
                             svg.querySelectorAll('.unified-hour-label').forEach(n => n.remove());
 
-                            // Position overlay labels using chart layout interface
+                            // Use chart layout interface to get precise bar positions
                             const cli = chartElement._chartInstance.getChartLayoutInterface();
                             const area = cli.getChartAreaBoundingBox();
                             const labelY = area.top + area.height + 12;
+
+                            // Calculate spacing between bar groups
+                            // getXLocation returns the center of the bar group
+                            const group0Center = cli.getXLocation(0);
+                            const group1Center = cli.getXLocation(4); // Next hour group
+                            const groupSpacing = group1Center - group0Center;
+
+                            // Calculate group width based on groupWidth percentage
+                            const groupWidthPercent = (isMobile || isTablet) ? 0.95 : 0.90;
+                            const groupWidth = groupSpacing * groupWidthPercent;
+
+                            // For each hour, get the center of the first bar group (hour * 4)
+                            // Then calculate left edge: center - (groupWidth / 2)
                             for (let hour = 0; hour < 24; hour++) {
-                                const dataIndex = hour * 4; // leftmost of each hour
-                                const xPos = cli.getXLocation(dataIndex);
+                                const dataIndex = hour * 4; // First bar of each hour group
+                                const groupCenterX = cli.getXLocation(dataIndex);
+                                const xPos = groupCenterX - (groupWidth / 2);
+
                                 const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
                                 lbl.textContent = hour.toString();
                                 lbl.setAttribute('x', xPos.toString());
                                 lbl.setAttribute('y', labelY.toString());
-                                lbl.setAttribute('text-anchor', 'middle');
+                                lbl.setAttribute('text-anchor', 'start');
                                 lbl.setAttribute('font-family', 'Arial, sans-serif');
                                 lbl.setAttribute('font-size', (isMobile ? '12' : '12'));
                                 lbl.setAttribute('fill', 'white');
@@ -770,14 +785,15 @@
                                                 const isMobile = window.innerWidth <= 900;
                                                 const isTablet = window.innerWidth > 900 && window.innerWidth <= 1200;
                                                 const maxBarWidth = isMobile ? 20 : (isTablet ? 30 : 50);
-                                                const minBarX = isMobile ? 20 : (isTablet ? 30 : 50);
+                                                // Don't filter by minBarX - let chartArea.left handle positioning
 
                                                 bars.forEach(bar => {
                                                     const x = parseFloat(bar.getAttribute('x') || 0);
                                                     const width = parseFloat(bar.getAttribute('width') || 0);
                                                     const height = parseFloat(bar.getAttribute('height') || 0);
                                                     const fill = bar.getAttribute('fill') || '';
-                                                    if (width > 0 && width < maxBarWidth && x >= minBarX && height > 0 && fill && fill !== '#ffffff' && fill !== '#000000') {
+                                                    // Filter for price bars: must have width, reasonable size, positive height, and colored fill
+                                                    if (width > 0 && width < maxBarWidth && height > 5 && fill && fill !== '#ffffff' && fill !== '#000000' && fill !== 'transparent') {
                                                         barPositions.push({ x, width, centerX: x + width / 2, height, fill });
                                                     }
                                                 });
