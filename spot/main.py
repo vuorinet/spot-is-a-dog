@@ -113,7 +113,7 @@ def create_app() -> FastAPI:
 
     @app.get("/favicon.ico")
     async def favicon() -> FileResponse:
-        icon_path = Path("static") / "icon-192.png"
+        icon_path = Path(__file__).parent.parent.joinpath("static/spot-192.png")
         return FileResponse(
             icon_path,
             media_type="image/png",

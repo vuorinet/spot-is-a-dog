@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Generate PWA icon files for Spot is a dog app.
-Creates icon-192.png and icon-512.png with lightning and chart bars design.
+Creates spot-192.png and spot-512.png with lightning and chart bars design.
 """
 
 from PIL import Image, ImageDraw
@@ -89,9 +89,9 @@ def main():
     sizes = [192, 512]
 
     for size in sizes:
-        print(f"Generating icon-{size}.png...")
+        print(f"Generating spot-{size}.png...")
         icon = create_icon(size)
-        icon_path = f"static/icon-{size}.png"
+        icon_path = f"static/spot-{size}.png"
         icon.save(icon_path, format="PNG", optimize=True)
         print(f"✓ Created {icon_path}")
 
