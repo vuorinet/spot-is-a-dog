@@ -66,6 +66,35 @@ body {
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    gap: 8px;
+}
+
+.github-link {
+    background: transparent;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #ddd;
+    cursor: pointer;
+    padding: 6px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    text-decoration: none;
+}
+
+.github-link:hover {
+    background: #222;
+    border-color: #666;
+    color: #fff;
+}
+
+.github-link:active {
+    background: #333;
+}
+
+.github-link svg {
+    display: block;
 }
 
 .fullscreen-btn {
@@ -202,6 +231,14 @@ body {
         align-items: center;
         justify-content: flex-end;
         flex-shrink: 0;
+        gap: 6px;
+    }
+    .github-link {
+        padding: 4px 6px;
+    }
+    .github-link svg {
+        width: 16px;
+        height: 16px;
     }
     .fullscreen-btn {
         padding: 4px 6px;
@@ -271,6 +308,14 @@ body {
         align-items: center;
         justify-content: flex-end;
         flex-shrink: 0;
+        gap: 6px;
+    }
+    .github-link {
+        padding: 4px 6px;
+    }
+    .github-link svg {
+        width: 16px;
+        height: 16px;
     }
     .fullscreen-btn {
         padding: 4px 6px;
@@ -303,9 +348,6 @@ body {
     }
 
     /* Tomorrow's chart - smaller, positioned to peek at bottom */
-    #tomorrowChart {
-        /* No negative margins - let it flow naturally with gap */
-    }
     #tomorrowChart .chart-body {
         height: 60vh; /* Smaller than today's chart */
         min-height: 200px;
