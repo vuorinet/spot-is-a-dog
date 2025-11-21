@@ -467,11 +467,12 @@
                                 const datasetIndex = element.datasetIndex;
                                 const index = element.index;
 
-                                // Get tooltip element or create one
-                                let tooltipEl = document.getElementById('chartjs-tooltip-click');
+                                // Get tooltip element or create one - use unique ID per chart
+                                const tooltipId = 'chartjs-tooltip-click-' + date;
+                                let tooltipEl = document.getElementById(tooltipId);
                                 if (!tooltipEl) {
                                     tooltipEl = document.createElement('div');
-                                    tooltipEl.id = 'chartjs-tooltip-click';
+                                    tooltipEl.id = tooltipId;
                                     tooltipEl.style.cssText = 'position: absolute; pointer-events: none; opacity: 0; z-index: 1000; background: rgba(255, 255, 255, 0.95); border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-family: Arial, sans-serif; font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,0.2);';
                                     document.body.appendChild(tooltipEl);
                                 }
@@ -514,8 +515,30 @@
 
                                 tooltipEl.innerHTML = tooltipHTML;
                                 tooltipEl.style.opacity = '1';
-                                tooltipEl.style.left = event.x + 'px';
-                                tooltipEl.style.top = event.y + 'px';
+
+                                // Position tooltip relative to the chart canvas, not global coordinates
+                                const canvasRect = chart.canvas.getBoundingClientRect();
+                                const tooltipWidth = tooltipEl.offsetWidth || 200;
+                                const tooltipHeight = tooltipEl.offsetHeight || 100;
+
+                                // Calculate position relative to canvas
+                                const x = event.native.clientX - canvasRect.left;
+                                const y = event.native.clientY - canvasRect.top;
+
+                                // Position tooltip near the click, but keep it within chart bounds
+                                let leftPos = canvasRect.left + x + 10;
+                                let topPos = canvasRect.top + y - tooltipHeight - 10;
+
+                                // Adjust if tooltip would go off screen
+                                if (leftPos + tooltipWidth > window.innerWidth) {
+                                    leftPos = canvasRect.left + x - tooltipWidth - 10;
+                                }
+                                if (topPos < 0) {
+                                    topPos = canvasRect.top + y + 10;
+                                }
+
+                                tooltipEl.style.left = leftPos + 'px';
+                                tooltipEl.style.top = topPos + 'px';
 
                                 // Hide tooltip when clicking elsewhere
                                 const hideTooltip = function (e) {
