@@ -21,10 +21,18 @@
     <script
         src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
     <script>
-        // Register annotation plugin globally
-        if (typeof Chart !== 'undefined' && typeof annotationPlugin !== 'undefined') {
-            Chart.register(annotationPlugin);
-        }
+        // Register annotation plugin globally when both are loaded
+        (function () {
+            function registerPlugin() {
+                if (typeof Chart !== 'undefined' && typeof annotationPlugin !== 'undefined') {
+                    Chart.register(annotationPlugin);
+                    console.log('Chart.js annotation plugin registered');
+                } else {
+                    setTimeout(registerPlugin, 50);
+                }
+            }
+            registerPlugin();
+        })();
     </script>
     <script defer src="/static/js/main.js?v={{ app_version }}"></script>
 

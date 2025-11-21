@@ -762,7 +762,7 @@
             return;
         }
 
-        const todayChartElement = d.querySelector('#todayChart [id*="googleChart"]');
+        const todayChartElement = d.querySelector('#todayChart canvas[id*="chart_"]');
         console.log('Today chart element:', todayChartElement ? 'FOUND' : 'NOT FOUND');
         if (!todayChartElement) {
             console.warn('Today chart element not found');

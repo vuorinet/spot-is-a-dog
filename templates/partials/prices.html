@@ -243,38 +243,44 @@
                 const minPrice = data.minPrice;
 
                 // Prepare annotations for gridlines, vertical lines, and now line
-                const annotations = {
-                    x: [],
-                    y: []
-                };
+                // Annotation plugin requires object format with unique keys
+                const annotations = {};
 
                 // Add hourly vertical lines
                 const hourStep = data.granularity === 'quarter_hour' ? 4 : 1;
                 for (let hour = 0; hour < 24; hour++) {
                     const dataPointIndex = hour * hourStep;
                     if (dataPointIndex < validData.length) {
-                        annotations.x.push({
+                        annotations[`vline_${hour}`] = {
                             type: 'line',
                             xMin: dataPointIndex,
                             xMax: dataPointIndex,
-                            borderColor: '#555555',
+                            yMin: minPrice,
+                            yMax: maxPrice,
+                            borderColor: 'rgba(255, 255, 255, 0.2)',
                             borderWidth: 1,
-                            opacity: 0.5
-                        });
+                            drawTime: 'beforeDatasetsDraw',
+                            xScaleID: 'x',
+                            yScaleID: 'y'
+                        };
                     }
                 }
 
                 // Add horizontal gridlines (every 1 cent, major every 5)
                 for (let price = minPrice; price <= maxPrice; price += 1) {
                     const isMajor = price % 5 === 0;
-                    annotations.y.push({
+                    annotations[`hline_${price}`] = {
                         type: 'line',
                         yMin: price,
                         yMax: price,
-                        borderColor: isMajor ? '#aaaaaa' : '#666666',
+                        xMin: 0,
+                        xMax: labels.length > 0 ? labels.length - 1 : 0,
+                        borderColor: isMajor ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.15)',
                         borderWidth: isMajor ? 2 : 1.5,
-                        opacity: isMajor ? 1.0 : 0.7
-                    });
+                        drawTime: 'beforeDatasetsDraw',
+                        xScaleID: 'x',
+                        yScaleID: 'y'
+                    };
                 }
 
                 // Add now line for today's chart
@@ -293,18 +299,19 @@
                     }
 
                     if (dataPointIndex >= 0) {
-                        annotations.x.push({
+                        annotations['nowline'] = {
                             type: 'line',
                             xMin: dataPointIndex,
                             xMax: dataPointIndex,
-                            borderColor: '#ff9900',
+                            yMin: minPrice,
+                            yMax: maxPrice,
+                            borderColor: 'rgba(255, 153, 0, 0.9)',
                             borderWidth: 3,
                             borderDash: [4, 3],
-                            opacity: 0.9,
-                            label: {
-                                display: false
-                            }
-                        });
+                            drawTime: 'afterDatasetsDraw',
+                            xScaleID: 'x',
+                            yScaleID: 'y'
+                        };
                     }
                 }
 
@@ -390,11 +397,13 @@
                                 }
                             },
                             annotation: {
-                                annotations: annotations
+                                annotations: annotations,
+                                clip: false
                             }
                         },
                         scales: {
                             x: {
+                                id: 'x',
                                 stacked: true,
                                 display: true,
                                 barPercentage: (isMobile || isTablet) ? 0.95 : 0.90,
@@ -422,6 +431,7 @@
                                 }
                             },
                             y: {
+                                id: 'y',
                                 stacked: true,
                                 min: minPrice,
                                 max: maxPrice,
@@ -450,8 +460,77 @@
                     }
                 };
 
+                // Debug: Log annotation configuration
+                const annotationKeys = Object.keys(annotations);
+                console.log('Annotations config:', {
+                    count: annotationKeys.length,
+                    keys: annotationKeys.slice(0, 5),
+                    sample: annotations[annotationKeys[0]]
+                });
+
                 // Create chart
                 const chart = new Chart(chartElement, chartConfig);
+
+                // Verify annotation plugin is loaded
+                if (!chart.options.plugins.annotation) {
+                    console.error('Annotation plugin not found!');
+                } else {
+                    console.log('Annotation plugin loaded, annotations:', chart.options.plugins.annotation.annotations);
+                }
+
+                // Add custom hour labels for quarter-hour data
+                if (data.granularity === 'quarter_hour') {
+                    chart.canvas.parentElement.style.position = 'relative';
+                    const labelContainer = document.createElement('div');
+                    labelContainer.style.cssText = 'position: absolute; bottom: 0; left: 0; right: 0; height: 30px; pointer-events: none;';
+                    labelContainer.className = 'chart-hour-labels';
+                    chart.canvas.parentElement.appendChild(labelContainer);
+
+                    function updateHourLabels() {
+                        // Clear existing labels
+                        labelContainer.innerHTML = '';
+
+                        const chartArea = chart.chartArea;
+                        const scale = chart.scales.x;
+                        if (!chartArea || !scale) {
+                            setTimeout(updateHourLabels, 100);
+                            return;
+                        }
+
+                        for (let hour = 0; hour < 24; hour++) {
+                            const dataPointIndex = hour * 4;
+                            if (dataPointIndex < labels.length) {
+                                try {
+                                    // Get the left edge of the first bar in the hour group
+                                    const xPos = scale.getPixelForValue(dataPointIndex);
+                                    // Adjust for bar width to get left edge (barPercentage affects this)
+                                    const barPercentage = (isMobile || isTablet) ? 0.95 : 0.90;
+                                    const categoryWidth = scale.width / labels.length;
+                                    const barWidth = categoryWidth * barPercentage;
+                                    const leftEdge = xPos - (barWidth / 2);
+
+                                    const label = document.createElement('div');
+                                    label.textContent = hour.toString();
+                                    label.style.cssText = `position: absolute; left: ${leftEdge}px; bottom: 5px; color: white; font-size: ${isMobile ? '12px' : '12px'}; font-family: Arial, sans-serif; pointer-events: none; white-space: nowrap;`;
+                                    labelContainer.appendChild(label);
+                                } catch (e) {
+                                    console.warn('Error positioning hour label:', e);
+                                }
+                            }
+                        }
+                    }
+
+                    // Update labels after chart is drawn
+                    chart.update();
+                    setTimeout(updateHourLabels, 100);
+
+                    // Update labels on resize
+                    const originalResize = chart.resize;
+                    chart.resize = function () {
+                        originalResize.call(this);
+                        setTimeout(updateHourLabels, 100);
+                    };
+                }
 
                 // Store chart instance and metadata
                 chartElement._chartInstance = chart;
@@ -498,6 +577,7 @@
 
             function updateNowLine() {
                 if (document.hidden) return;
+                if (!chartElement._chartInstance) return;
 
                 const now = new Date();
                 const currentHour = now.getHours();
@@ -512,23 +592,26 @@
                     dataPointIndex = validData.findIndex(row => row[0] === currentHour.toString());
                 }
 
-                if (dataPointIndex >= 0 && chartElement._chartInstance) {
+                if (dataPointIndex >= 0) {
                     const annotations = chartElement._chartInstance.options.plugins.annotation.annotations;
                     // Remove existing now line
-                    const nowLineIndex = annotations.x.findIndex(a => a.borderColor === '#ff9900');
-                    if (nowLineIndex >= 0) {
-                        annotations.x.splice(nowLineIndex, 1);
+                    if (annotations.nowline) {
+                        delete annotations.nowline;
                     }
                     // Add new now line
-                    annotations.x.push({
+                    annotations.nowline = {
                         type: 'line',
                         xMin: dataPointIndex,
                         xMax: dataPointIndex,
-                        borderColor: '#ff9900',
+                        yMin: chartElement._originalPriceRange.minPrice,
+                        yMax: chartElement._originalPriceRange.maxPrice,
+                        borderColor: 'rgba(255, 153, 0, 0.9)',
                         borderWidth: 3,
                         borderDash: [4, 3],
-                        opacity: 0.9
-                    });
+                        drawTime: 'afterDatasetsDraw',
+                        xScaleID: 'x',
+                        yScaleID: 'y'
+                    };
                     chartElement._chartInstance.update('none');
                 }
             }
