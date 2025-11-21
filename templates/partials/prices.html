@@ -355,9 +355,10 @@
                                 display: false
                             },
                             tooltip: {
-                                enabled: true,
+                                enabled: false, // Disable default hover tooltip
                                 mode: 'index',
                                 intersect: false,
+                                animation: false,
                                 backgroundColor: 'rgba(255, 255, 255, 0.95)',
                                 titleColor: '#333',
                                 bodyColor: '#666',
@@ -452,7 +453,81 @@
                         },
                         interaction: {
                             mode: 'index',
-                            intersect: false
+                            intersect: true // Only interact when directly over element
+                        },
+                        onHover: function (event, elements) {
+                            // Disable hover tooltip - do nothing
+                            event.native.target.style.cursor = elements.length > 0 ? 'pointer' : 'default';
+                        },
+                        onClick: function (event, elements) {
+                            // Show tooltip on click
+                            const chart = this;
+                            if (elements.length > 0) {
+                                const element = elements[0];
+                                const datasetIndex = element.datasetIndex;
+                                const index = element.index;
+
+                                // Get tooltip element or create one
+                                let tooltipEl = document.getElementById('chartjs-tooltip-click');
+                                if (!tooltipEl) {
+                                    tooltipEl = document.createElement('div');
+                                    tooltipEl.id = 'chartjs-tooltip-click';
+                                    tooltipEl.style.cssText = 'position: absolute; pointer-events: none; opacity: 0; z-index: 1000; background: rgba(255, 255, 255, 0.95); border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-family: Arial, sans-serif; font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,0.2);';
+                                    document.body.appendChild(tooltipEl);
+                                }
+
+                                // Get data for tooltip
+                                const timeStr = labels[index];
+                                const row = validData[index];
+                                if (!row) return;
+
+                                const [, lowPrice, mediumPrice, highPrice, marginPrice] = row;
+                                const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
+                                const totalPrice = spotPrice + (marginPrice || 0);
+
+                                // Format time
+                                let timeFormatted;
+                                if (data.granularity === 'quarter_hour') {
+                                    const intervalIndex = parseInt(timeStr);
+                                    const hour = Math.floor(intervalIndex / 4);
+                                    const quarter = intervalIndex % 4;
+                                    const minute = quarter * 15;
+                                    timeFormatted = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+                                } else {
+                                    const hour = parseInt(timeStr);
+                                    timeFormatted = `${hour.toString().padStart(2, '0')}:00`;
+                                }
+
+                                // Build tooltip HTML
+                                let tooltipHTML = `<div style="font-weight: bold; margin-bottom: 4px; color: #333;">${timeFormatted}</div>`;
+                                if (lowPrice !== 0 && lowPrice !== null && lowPrice !== undefined) {
+                                    tooltipHTML += `<div style="color: #666;">Price: <strong>${lowPrice.toFixed(2)} c/kWh</strong></div>`;
+                                }
+                                if (mediumPrice !== 0 && mediumPrice !== null && mediumPrice !== undefined) {
+                                    tooltipHTML += `<div style="color: #666;">Price: <strong>${mediumPrice.toFixed(2)} c/kWh</strong></div>`;
+                                }
+                                if (highPrice !== 0 && highPrice !== null && highPrice !== undefined) {
+                                    tooltipHTML += `<div style="color: #666;">Price: <strong>${highPrice.toFixed(2)} c/kWh</strong></div>`;
+                                }
+                                tooltipHTML += `<div style="color: #666;">Margin: <strong>${(marginPrice || 0).toFixed(2)} c/kWh</strong></div>`;
+                                tooltipHTML += `<div style="border-top: 1px solid #ddd; margin-top: 4px; padding-top: 4px; color: #333;"><strong>Total: ${totalPrice.toFixed(2)} c/kWh</strong></div>`;
+
+                                tooltipEl.innerHTML = tooltipHTML;
+                                tooltipEl.style.opacity = '1';
+                                tooltipEl.style.left = event.x + 'px';
+                                tooltipEl.style.top = event.y + 'px';
+
+                                // Hide tooltip when clicking elsewhere
+                                const hideTooltip = function (e) {
+                                    if (!tooltipEl.contains(e.target) && e.target !== chart.canvas) {
+                                        tooltipEl.style.opacity = '0';
+                                        document.removeEventListener('click', hideTooltip);
+                                    }
+                                };
+                                setTimeout(() => {
+                                    document.addEventListener('click', hideTooltip);
+                                }, 0);
+                            }
                         },
                         animation: {
                             duration: 0
