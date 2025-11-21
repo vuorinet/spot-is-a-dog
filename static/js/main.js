@@ -175,6 +175,50 @@
     // Track the current date to detect midnight transitions
     let lastKnownDate = new Date().toDateString();
 
+    // Keep a dedicated midnight timer so today/tomorrow swap happens exactly at local midnight
+    let midnightTimerId = null;
+
+    function scheduleMidnightRefresh() {
+        if (midnightTimerId) {
+            clearTimeout(midnightTimerId);
+        }
+
+        const now = new Date();
+        const nextMidnight = new Date(now);
+        // small buffer (5s) to ensure the clock has rolled over before we inspect the date string
+        nextMidnight.setHours(24, 0, 5, 0);
+        const waitMs = Math.max(1000, nextMidnight.getTime() - now.getTime());
+
+        midnightTimerId = setTimeout(() => {
+            console.log(
+                'Local midnight reached - forcing today/tomorrow rotation'
+            );
+            window.handleMidnightTransition();
+            scheduleMidnightRefresh();
+        }, waitMs);
+    }
+
+    window.handleMidnightTransition = function () {
+        const dateChanged = window.checkDateChange();
+        if (!dateChanged) {
+            // In rare cases something else already updated lastKnownDate; still ensure charts redraw now
+            console.log(
+                'Midnight handler forcing manual refresh (date already recorded)'
+            );
+            if (window.chartDataTimestamps) {
+                window.chartDataTimestamps.today = null;
+                window.chartDataTimestamps.tomorrow = null;
+            }
+            if (window.chartDataMetadata) {
+                window.chartDataMetadata.today = { fetchedDate: null, fetchedHour: null };
+                window.chartDataMetadata.tomorrow = { fetchedDate: null, fetchedHour: null };
+            }
+            window.refreshCharts();
+        }
+    };
+
+    scheduleMidnightRefresh();
+
     // Track when we last checked for activity (to detect sleep/wake cycles)
     let lastActivityCheck = Date.now();
 
