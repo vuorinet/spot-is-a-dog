@@ -7,12 +7,18 @@ import os
 import typing as t
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 from dateutil import tz
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -104,6 +110,15 @@ def create_app() -> FastAPI:
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/favicon.ico")
+    async def favicon() -> FileResponse:
+        icon_path = Path("static") / "icon-192.png"
+        return FileResponse(
+            icon_path,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=31536000"},
+        )
 
     @app.get("/version")
     async def version() -> dict[str, str]:
