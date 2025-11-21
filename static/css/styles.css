@@ -51,6 +51,8 @@ body {
     height: 3em;
     width: auto;
     margin-right: 8px;
+    filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.4))
+        drop-shadow(0 0 16px rgba(255, 255, 255, 0.3));
 }
 
 .current-price {
