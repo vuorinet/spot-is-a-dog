@@ -115,7 +115,8 @@ background_tasks: list[asyncio.Task] = []
 
 
 def _track_background_task(
-    coro: t.Coroutine[t.Any, t.Any, t.Any], name: str
+    coro: t.Coroutine[t.Any, t.Any, t.Any],
+    name: str,
 ) -> asyncio.Task:
     task = asyncio.create_task(coro)
     task.set_name(name)

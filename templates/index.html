@@ -79,19 +79,24 @@
     </header>
 
     <main class="charts">
-        <section id="todayChart" class="chart" data-chart-role="today">
+        <!-- Both charts trigger HTMX requests on load -->
+        <section id="todayChart" class="chart" hx-get="/partials/prices" hx-trigger="load"
+            hx-vals='js:{date: window.getHelsinkiDate(0), role: "today", margin: document.body.getAttribute("data-default-margin")}'
+            hx-swap="outerHTML">
             <div class="chart-head">Today</div>
             <div class="chart-body">
                 <div class="chart-placeholder"></div>
             </div>
         </section>
-        <section id="tomorrowChart" class="chart" data-chart-role="tomorrow">
+
+        <section id="tomorrowChart" class="chart" hx-get="/partials/prices" hx-trigger="load"
+            hx-vals='js:{date: window.getHelsinkiDate(1), role: "tomorrow", margin: document.body.getAttribute("data-default-margin")}'
+            hx-swap="outerHTML">
             <div class="chart-head">Tomorrow</div>
             <div class="chart-body">
                 <div class="chart-placeholder"></div>
             </div>
         </section>
-
     </main>
 
     <div id="toast" class="toast hidden">
