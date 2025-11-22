@@ -4,6 +4,56 @@
     const reloadBtn = d.getElementById('reloadNow');
     const countdownEl = d.getElementById('countdown');
 
+    const HELSINKI_TZ = 'Europe/Helsinki';
+    const HELSINKI_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
+        timeZone: HELSINKI_TZ,
+        hour12: false,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+    });
+    const HELSINKI_OFFSET_FORMATTER = new Intl.DateTimeFormat('en-US', {
+        timeZone: HELSINKI_TZ,
+        timeZoneName: 'shortOffset',
+    });
+
+    function getHelsinkiParts(dateObj = new Date()) {
+        const parts = HELSINKI_DATE_TIME_FORMATTER.formatToParts(dateObj);
+        const values = {};
+        parts.forEach(part => {
+            if (part.type !== 'literal') {
+                values[part.type] = part.value;
+            }
+        });
+        const offsetParts = HELSINKI_OFFSET_FORMATTER.formatToParts(dateObj);
+        const tzToken = offsetParts.find(p => p.type === 'timeZoneName')?.value || 'GMT+02';
+        const offsetMatch = tzToken.match(/GMT([+-]\d{1,2})(?::(\d{2}))?/i);
+        let offsetMinutes = 0;
+        if (offsetMatch) {
+            const sign = offsetMatch[1].startsWith('-') ? -1 : 1;
+            const hours = Math.abs(parseInt(offsetMatch[1], 10));
+            const minutes = offsetMatch[2] ? parseInt(offsetMatch[2], 10) : 0;
+            offsetMinutes = sign * (hours * 60 + minutes);
+        }
+        return {
+            isoDate: `${values.year}-${values.month}-${values.day}`,
+            hour: Number(values.hour),
+            minute: Number(values.minute),
+            second: Number(values.second),
+            offsetMinutes,
+        };
+    }
+
+    function addDaysToIso(isoDate, days = 1) {
+        const [year, month, day] = isoDate.split('-').map(Number);
+        const baseDate = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+        const target = new Date(baseDate.getTime() + days * 24 * 60 * 60 * 1000);
+        return getHelsinkiParts(target).isoDate;
+    }
+
     // Keep-awake via URL query parameter
     let wakeLock = null;
     async function requestWakeLock() {
@@ -61,26 +111,15 @@
                 }
 
                 // Handle cache updates (midnight rotation, new data arrivals)
-                if (
-                    event.type === 'cache_rotated' ||
-                    event.type === 'today_updated' ||
-                    event.type === 'tomorrow_updated'
-                ) {
-                    console.log(`Cache event received: ${event.type}`, event);
-
-                    // Show notification for important price updates
-                    if (event.type === 'tomorrow_updated') {
+                if (event.type === 'day_updated' && event.date) {
+                    console.log('Day update event received', event);
+                    if (event.date === chartDateState.tomorrow) {
                         const reason = event.reason || 'new data available';
                         console.log(`Tomorrow's prices updated: ${reason}`);
-
-                        // Show a brief notification for tomorrow price updates
-                        const existingNotification = d.querySelector(
-                            '.price-update-notification'
-                        );
+                        const existingNotification = d.querySelector('.price-update-notification');
                         if (existingNotification) {
                             existingNotification.remove();
                         }
-
                         const notification = d.createElement('div');
                         notification.className = 'price-update-notification';
                         notification.style.cssText = `
@@ -99,17 +138,13 @@
             `;
                         notification.textContent = `📈 Tomorrow's electricity prices updated!`;
                         d.body.appendChild(notification);
-
-                        // Remove notification after 4 seconds
                         setTimeout(() => {
                             if (notification.parentNode) {
                                 notification.remove();
                             }
                         }, 4000);
                     }
-
-                    // Always refresh charts when server notifies us of new data
-                    window.refreshCharts();
+                    handleServerDayUpdate(event.date);
                 }
             };
             es.onerror = () => {
@@ -132,9 +167,222 @@
     }
     beginVersionWatch();
 
+    // Helper function to clear chart cache
+    function clearChartCache(chartElement) {
+        if (!chartElement) return;
+
+        // Clear timers
+        if (chartElement._nowLineTimer) {
+            clearInterval(chartElement._nowLineTimer);
+            clearTimeout(chartElement._nowLineTimer);
+            delete chartElement._nowLineTimer;
+        }
+
+        // Clear event handlers
+        if (chartElement._visibilityHandler) {
+            document.removeEventListener('visibilitychange', chartElement._visibilityHandler);
+            delete chartElement._visibilityHandler;
+        }
+        if (chartElement._focusHandler) {
+            window.removeEventListener('focus', chartElement._focusHandler);
+            delete chartElement._focusHandler;
+        }
+        if (chartElement._pageShowHandler) {
+            window.removeEventListener('pageshow', chartElement._pageShowHandler);
+            delete chartElement._pageShowHandler;
+        }
+        if (chartElement._pageHideHandler) {
+            window.removeEventListener('pagehide', chartElement._pageHideHandler);
+            delete chartElement._pageHideHandler;
+        }
+
+        // Clear cached chart data
+        delete chartElement._chartInstance;
+        delete chartElement._chartData;
+        delete chartElement._validData;
+        delete chartElement._granularity;
+        delete chartElement._originalPriceRange;
+    }
+
+    // Define refresh functions early so they're available for event handlers
+    function refreshChartsSelective(refreshToday = true, refreshTomorrow = true) {
+        if (isRefreshInProgress) {
+            console.log('Refresh already in progress - skipping duplicate request');
+            return;
+        }
+
+        const chartsToRefresh = [];
+        if (refreshToday) chartsToRefresh.push('today');
+        if (refreshTomorrow) chartsToRefresh.push('tomorrow');
+        if (chartsToRefresh.length === 0) {
+            console.log('No charts need refreshing - skipping');
+            return;
+        }
+
+        if (!chartDateState.today || !chartDateState.tomorrow) {
+            syncChartDateState();
+        }
+
+        isRefreshInProgress = true;
+        console.log(`Selectively refreshing charts: ${chartsToRefresh.join(', ')}`);
+
+        const existingIndicator = d.querySelector('.refresh-indicator');
+        if (existingIndicator) {
+            existingIndicator.remove();
+        }
+
+        const indicator = d.createElement('div');
+        indicator.className = 'refresh-indicator';
+        indicator.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #333;
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      z-index: 1000;
+      opacity: 0.9;
+      pointer-events: none;
+    `;
+        indicator.textContent = `Updating ${chartsToRefresh.join(' & ')} prices...`;
+        d.body.appendChild(indicator);
+
+        setTimeout(() => {
+            if (indicator.parentNode) {
+                indicator.remove();
+            }
+        }, 3000);
+
+        chartsToRefresh.forEach(role => {
+            const chartElement = d.querySelector(`#${role}Chart canvas[id^="chart_"]`);
+            if (chartElement) {
+                clearChartCache(chartElement);
+                console.log(`Cleared cached chart data for ${role}`);
+            }
+        });
+
+        const margin = d.body.getAttribute('data-default-margin') || '0';
+
+        try {
+            chartsToRefresh.forEach(role => {
+                const dateIso = chartDateState[role];
+                if (!dateIso) {
+                    console.warn(`No date configured for ${role}, skipping refresh`);
+                    return;
+                }
+                const params = new URLSearchParams({
+                    date: dateIso,
+                    role,
+                    margin,
+                });
+                htmx.ajax('GET', `/partials/prices?${params.toString()}`, {
+                    target: `#${role}Chart`,
+                    swap: 'outerHTML',
+                });
+            });
+        } catch (error) {
+            console.error('Error refreshing charts:', error);
+        }
+
+        setTimeout(() => {
+            isRefreshInProgress = false;
+            console.log('Selective chart refresh completed');
+        }, 2000);
+    }
+    window.refreshChartsSelective = refreshChartsSelective;
+
+    function handleVisibilityChange(eventSource = 'unknown') {
+        console.log(`Handle visibility change from: ${eventSource}`);
+
+        // Clear any pending debounced refresh
+        if (refreshDebounceTimeout) {
+            clearTimeout(refreshDebounceTimeout);
+            refreshDebounceTimeout = null;
+        }
+
+        // If a refresh is already in progress, just update the yellow line
+        if (isRefreshInProgress) {
+            console.log('Refresh in progress - only updating yellow line');
+            window.updateNowLineImmediately();
+            return;
+        }
+
+        // Debounce multiple rapid events (common during Android unlock)
+        refreshDebounceTimeout = setTimeout(() => {
+            console.log('Processing visibility change after debounce...');
+
+            // Check if we likely woke from sleep (now returns detailed info)
+            const sleepInfo = window.checkWakeFromSleep();
+
+            // Check for date change first (most important)
+            const dateChanged = window.checkDateChange();
+
+            if (dateChanged) {
+                // Date changed - must refresh both charts, exit early
+                console.log('Date change detected - exiting handleVisibilityChange early (both charts refreshed)');
+                return; // checkDateChange already called refreshCharts
+            }
+
+            // Check if data is actually stale (now returns detailed info)
+            const staleDataInfo = window.checkStaleData();
+
+            // Smart refresh logic based on sleep duration and data staleness
+            if (staleDataInfo.hasStaleData) {
+                console.log('Refreshing charts due to stale data');
+                // Use selective refresh - only refresh charts that are actually stale
+                refreshChartsSelective(staleDataInfo.todayStale, staleDataInfo.tomorrowStale);
+            } else if (sleepInfo) {
+                // Handle different sleep scenarios
+                if (sleepInfo.type === 'long') {
+                    // Long sleep (2+ hours) - check if data is actually stale before refreshing
+                    // Even after long sleep, if data is fresh, just update the yellow line
+                    console.log('Long sleep detected - but data is fresh, only updating yellow line');
+                    window.updateNowLineImmediately();
+                } else if (sleepInfo.type === 'medium') {
+                    // Medium sleep (30min-2h) - only refresh if it's during key hours when data might have updated
+                    const hour = new Date().getHours();
+                    const isKeyHour = (hour >= 6 && hour <= 10) || (hour >= 14 && hour <= 18);
+
+                    if (isKeyHour) {
+                        console.log('Medium sleep during key hours - refreshing charts');
+                        window.refreshCharts();
+                    } else {
+                        console.log('Medium sleep but not key hours - only updating yellow line');
+                        window.updateNowLineImmediately();
+                    }
+                } else {
+                    // Short sleep (10-30min) - just quick screen lock, only update yellow line
+                    console.log('Short sleep (screen lock) - only updating yellow line');
+                    window.updateNowLineImmediately();
+                }
+            } else {
+                // No sleep detected, just update yellow line position
+                console.log('No sleep detected - only updating yellow line');
+                window.updateNowLineImmediately();
+            }
+
+            refreshDebounceTimeout = null;
+        }, 150); // 150ms debounce to handle rapid multiple events
+    }
+    window.handleVisibilityChange = handleVisibilityChange;
+
+    function handleServerDayUpdate(dateIso) {
+        if (!dateIso) return;
+        if (dateIso === chartDateState.today) {
+            window.refreshChartsSelective(true, false);
+        } else if (dateIso === chartDateState.tomorrow) {
+            window.refreshChartsSelective(false, true);
+            stopAfternoonPolling();
+        } else {
+            console.log('Received update for out-of-range date', dateIso);
+        }
+    }
+
     // Function to update yellow line immediately
     window.updateNowLineImmediately = function () {
-        const todayChartElement = d.querySelector('#todayChart [id*="googleChart"]');
+        const todayChartElement = d.querySelector('#todayChart canvas[id^="chart_"]');
         if (
             todayChartElement &&
             todayChartElement._chartInstance &&
@@ -161,7 +409,7 @@
 
     // Function to hide yellow line when window goes to background
     window.hideNowLine = function () {
-        const todayChartElement = d.querySelector('#todayChart [id*="googleChart"]');
+        const todayChartElement = d.querySelector('#todayChart canvas[id^="chart_"]');
         if (todayChartElement) {
             console.log('Hiding yellow line - window in background');
             const svgElement = todayChartElement.querySelector('svg');
@@ -172,8 +420,22 @@
         }
     };
 
+    const chartDateState = {
+        today: null,
+        tomorrow: null,
+    };
+
+    function syncChartDateState() {
+        const now = new Date();
+        const todayParts = getHelsinkiParts(now);
+        const tomorrowParts = getHelsinkiParts(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+        chartDateState.today = todayParts.isoDate;
+        chartDateState.tomorrow = tomorrowParts.isoDate;
+        return todayParts.isoDate;
+    }
+
     // Track the current date to detect midnight transitions
-    let lastKnownDate = new Date().toDateString();
+    let lastKnownDate = syncChartDateState();
 
     // Keep a dedicated midnight timer so today/tomorrow swap happens exactly at local midnight
     let midnightTimerId = null;
@@ -199,25 +461,69 @@
     }
 
     window.handleMidnightTransition = function () {
-        const dateChanged = window.checkDateChange();
-        if (!dateChanged) {
-            // In rare cases something else already updated lastKnownDate; still ensure charts redraw now
-            console.log(
-                'Midnight handler forcing manual refresh (date already recorded)'
-            );
-            if (window.chartDataTimestamps) {
-                window.chartDataTimestamps.today = null;
-                window.chartDataTimestamps.tomorrow = null;
-            }
-            if (window.chartDataMetadata) {
-                window.chartDataMetadata.today = { fetchedDate: null, fetchedHour: null };
-                window.chartDataMetadata.tomorrow = { fetchedDate: null, fetchedHour: null };
-            }
-            window.refreshCharts();
-        }
+        const helsinkiNow = getHelsinkiParts();
+        chartDateState.today = helsinkiNow.isoDate;
+        chartDateState.tomorrow = addDaysToIso(helsinkiNow.isoDate, 1);
+        lastKnownDate = helsinkiNow.isoDate;
+        console.log('Midnight handler forcing manual refresh for new dates', chartDateState);
+        window.chartDataTimestamps = {
+            today: null,
+            tomorrow: null,
+        };
+        window.chartDataMetadata = {
+            today: { fetchedDate: null, fetchedHour: null, intervalCount: 0 },
+            tomorrow: { fetchedDate: null, fetchedHour: null, intervalCount: 0 },
+        };
+        window.refreshCharts();
     };
 
     scheduleMidnightRefresh();
+
+    const afternoonPollingState = {
+        intervalId: null,
+        active: false,
+    };
+
+    function chartHasData(role) {
+        const meta = window.chartDataMetadata?.[role];
+        if (!meta) return false;
+        if (!meta.intervalCount || meta.intervalCount <= 0) return false;
+        if (meta.expectedIntervalCount) {
+            return meta.intervalCount >= meta.expectedIntervalCount;
+        }
+        return true;
+    }
+
+    function startAfternoonPolling() {
+        if (afternoonPollingState.active) return;
+        afternoonPollingState.active = true;
+        console.log('Starting aggressive afternoon polling for tomorrow data');
+        window.refreshChartsSelective(false, true);
+        afternoonPollingState.intervalId = setInterval(() => {
+            window.refreshChartsSelective(false, true);
+        }, 60 * 1000);
+    }
+
+    function stopAfternoonPolling() {
+        if (afternoonPollingState.intervalId) {
+            clearInterval(afternoonPollingState.intervalId);
+            afternoonPollingState.intervalId = null;
+        }
+        if (afternoonPollingState.active) {
+            console.log('Stopping afternoon polling');
+            afternoonPollingState.active = false;
+        }
+    }
+
+    function evaluateAfternoonWindow() {
+        const helsinki = getHelsinkiParts();
+        const inWindow = helsinki.hour === 14 && helsinki.minute <= 30;
+        if (inWindow && !chartHasData('tomorrow')) {
+            startAfternoonPolling();
+        } else if (!inWindow || chartHasData('tomorrow')) {
+            stopAfternoonPolling();
+        }
+    }
 
     // Track when we last checked for activity (to detect sleep/wake cycles)
     let lastActivityCheck = Date.now();
@@ -234,29 +540,61 @@
 
     // Track additional metadata for smart refresh decisions
     window.chartDataMetadata = {
-        today: { fetchedDate: null, fetchedHour: null },
-        tomorrow: { fetchedDate: null, fetchedHour: null },
+        today: {
+            fetchedDate: null,
+            fetchedHour: null,
+            intervalCount: 0,
+            expectedIntervalCount: 0,
+        },
+        tomorrow: {
+            fetchedDate: null,
+            fetchedHour: null,
+            intervalCount: 0,
+            expectedIntervalCount: 0,
+        },
     };
 
     // Function to check if date has changed and refresh if needed
     window.checkDateChange = function () {
-        const currentDate = new Date().toDateString();
-        if (currentDate !== lastKnownDate) {
-            console.log('Date changed detected:', lastKnownDate, '->', currentDate);
-            lastKnownDate = currentDate;
+        const helsinkiNow = getHelsinkiParts();
+        if (helsinkiNow.isoDate !== lastKnownDate) {
+            console.log('Date change detected (Helsinki):', lastKnownDate, '->', helsinkiNow.isoDate);
+            lastKnownDate = helsinkiNow.isoDate;
+            chartDateState.today = helsinkiNow.isoDate;
+            chartDateState.tomorrow = addDaysToIso(helsinkiNow.isoDate, 1);
 
-            // Clear chart data timestamps to force fresh data
             window.chartDataTimestamps = {
                 today: null,
                 tomorrow: null,
             };
             window.chartDataMetadata = {
-                today: { fetchedDate: null, fetchedHour: null },
-                tomorrow: { fetchedDate: null, fetchedHour: null },
+                today: {
+                    fetchedDate: null,
+                    fetchedHour: null,
+                    intervalCount: 0,
+                    expectedIntervalCount: 0,
+                },
+                tomorrow: {
+                    fetchedDate: null,
+                    fetchedHour: null,
+                    intervalCount: 0,
+                    expectedIntervalCount: 0,
+                },
+                today: {
+                    fetchedDate: null,
+                    fetchedHour: null,
+                    intervalCount: 0,
+                    expectedIntervalCount: 0,
+                },
+                tomorrow: {
+                    fetchedDate: null,
+                    fetchedHour: null,
+                    intervalCount: 0,
+                    expectedIntervalCount: 0,
+                },
             };
 
-            // Date has changed - refresh charts to get new data
-            console.log('Forcing complete chart refresh due to date change');
+            console.log('Forcing complete chart refresh due to Helsinki date change');
             window.refreshCharts();
             return true;
         }
@@ -468,6 +806,23 @@
         }
     }, 10 * 60 * 1000); // 10 minutes
 
+    evaluateAfternoonWindow();
+    setInterval(() => {
+        if (!document.hidden) {
+            evaluateAfternoonWindow();
+        }
+    }, 60 * 1000);
+
+    // Initial chart load on page startup - ensure dates are synced first
+    syncChartDateState();
+    // Small delay to allow backend to warm up cache, then load both charts
+    setTimeout(() => {
+        console.log('Initial chart load starting', chartDateState);
+        initialLoadAttempted = true;
+        tomorrowChartLoaded = false; // Reset flag for initial load
+        window.refreshChartsSelective(true, true);
+    }, 100);
+
     // Add keyboard shortcut for manual chart refresh
     document.addEventListener('keydown', event => {
         // Ctrl+Shift+R for force refresh (avoid conflicts with browser refresh)
@@ -526,16 +881,41 @@
         });
     }
 
+    // Track initial load to retry tomorrow if it fails
+    let initialLoadAttempted = false;
+    let tomorrowChartLoaded = false;
+
     // Add HTMX event listeners for debugging chart swaps
     d.body.addEventListener('htmx:afterSwap', function (evt) {
-        console.log(
-            'HTMX afterSwap:',
-            evt.detail.target.id || evt.detail.target.className
-        );
+        const targetId = evt.detail.target.id || evt.detail.target.className;
+        console.log('HTMX afterSwap:', targetId);
+        
+        if (targetId === 'tomorrowChart') {
+            tomorrowChartLoaded = true;
+        }
+        
+        // If initial load was attempted and tomorrow still hasn't loaded after 2 seconds, retry it
+        if (initialLoadAttempted && !tomorrowChartLoaded) {
+            setTimeout(() => {
+                if (!tomorrowChartLoaded) {
+                    console.log('Tomorrow chart did not load initially, retrying...');
+                    syncChartDateState();
+                    window.refreshChartsSelective(false, true);
+                }
+            }, 2000);
+        }
     });
 
     d.body.addEventListener('htmx:swapError', function (evt) {
         console.error('HTMX swap error:', evt.detail);
+        const targetId = evt.detail.target?.id;
+        if (targetId === 'tomorrowChart' && initialLoadAttempted) {
+            console.log('Tomorrow chart load failed, will retry...');
+            setTimeout(() => {
+                syncChartDateState();
+                window.refreshChartsSelective(false, true);
+            }, 1000);
+        }
     });
 
     // Function to redraw existing charts (for responsive resize)
@@ -543,10 +923,8 @@
         console.log('Redrawing existing charts for responsive layout...');
 
         // Find existing chart instances and redraw them
-        const todayChartElement = d.querySelector('#todayChart [id*="googleChart"]');
-        const tomorrowChartElement = d.querySelector(
-            '#tomorrowChart [id*="googleChart"]'
-        );
+        const todayChartElement = d.querySelector('#todayChart canvas[id^="chart_"]');
+        const tomorrowChartElement = d.querySelector('#tomorrowChart canvas[id^="chart_"]');
 
         // Only redraw if charts actually exist (avoid double drawing on page load)
         if (
@@ -555,7 +933,7 @@
             window.createChart
         ) {
             console.log('Redrawing today chart with cached data');
-            window.createChart('today');
+            window.createChart(todayChartElement.dataset.dateIso, 'today');
         }
 
         if (
@@ -564,235 +942,15 @@
             window.createChart
         ) {
             console.log('Redrawing tomorrow chart with cached data');
-            window.createChart('tomorrow');
+            window.createChart(tomorrowChartElement.dataset.dateIso, 'tomorrow');
         }
     };
 
-    // Smart refresh function that handles visibility/focus events intelligently
-    window.handleVisibilityChange = function(eventSource = 'unknown') {
-        console.log(`Handle visibility change from: ${eventSource}`);
-
-        // Clear any pending debounced refresh
-        if (refreshDebounceTimeout) {
-            clearTimeout(refreshDebounceTimeout);
-            refreshDebounceTimeout = null;
-        }
-
-        // If a refresh is already in progress, just update the yellow line
-        if (isRefreshInProgress) {
-            console.log('Refresh in progress - only updating yellow line');
-            window.updateNowLineImmediately();
-            return;
-        }
-
-        // Debounce multiple rapid events (common during Android unlock)
-        refreshDebounceTimeout = setTimeout(() => {
-            console.log('Processing visibility change after debounce...');
-
-            // Check if we likely woke from sleep (now returns detailed info)
-            const sleepInfo = window.checkWakeFromSleep();
-
-            // Check for date change first (most important)
-            const dateChanged = window.checkDateChange();
-
-            if (dateChanged) {
-                // Date changed - must refresh both charts, exit early
-                console.log('Date change detected - exiting handleVisibilityChange early (both charts refreshed)');
-                return; // checkDateChange already called refreshCharts
-            }
-
-            // Check if data is actually stale (now returns detailed info)
-            const staleDataInfo = window.checkStaleData();
-
-            // Smart refresh logic based on sleep duration and data staleness
-            if (staleDataInfo.hasStaleData) {
-                console.log('Refreshing charts due to stale data');
-                // Use selective refresh - only refresh charts that are actually stale
-                window.refreshChartsSelective(staleDataInfo.todayStale, staleDataInfo.tomorrowStale);
-            } else if (sleepInfo) {
-                // Handle different sleep scenarios
-                if (sleepInfo.type === 'long') {
-                    // Long sleep (2+ hours) - check if data is actually stale before refreshing
-                    // Even after long sleep, if data is fresh, just update the yellow line
-                    console.log('Long sleep detected - but data is fresh, only updating yellow line');
-                    window.updateNowLineImmediately();
-                } else if (sleepInfo.type === 'medium') {
-                    // Medium sleep (30min-2h) - only refresh if it's during key hours when data might have updated
-                    const hour = new Date().getHours();
-                    const isKeyHour = (hour >= 6 && hour <= 10) || (hour >= 14 && hour <= 18);
-
-                    if (isKeyHour) {
-                        console.log('Medium sleep during key hours - refreshing charts');
-                        window.refreshCharts();
-                    } else {
-                        console.log('Medium sleep but not key hours - only updating yellow line');
-                        window.updateNowLineImmediately();
-                    }
-                } else {
-                    // Short sleep (10-30min) - just quick screen lock, only update yellow line
-                    console.log('Short sleep (screen lock) - only updating yellow line');
-                    window.updateNowLineImmediately();
-                }
-            } else {
-                // No sleep detected, just update yellow line position
-                console.log('No sleep detected - only updating yellow line');
-                window.updateNowLineImmediately();
-            }
-
-            refreshDebounceTimeout = null;
-        }, 150); // 150ms debounce to handle rapid multiple events
-    };
-
-    // Selective chart refresh function - only refreshes charts that need new data
-    window.refreshChartsSelective = function (refreshToday = true, refreshTomorrow = true) {
-        // Prevent multiple simultaneous refreshes
-        if (isRefreshInProgress) {
-            console.log('Refresh already in progress - skipping duplicate request');
-            return;
-        }
-
-        if (!refreshToday && !refreshTomorrow) {
-            console.log('No charts need refreshing - skipping');
-            return;
-        }
-
-        isRefreshInProgress = true;
-        const chartsToRefresh = [];
-        if (refreshToday) chartsToRefresh.push('today');
-        if (refreshTomorrow) chartsToRefresh.push('tomorrow');
-
-        console.log(`Selectively refreshing charts: ${chartsToRefresh.join(', ')}`);
-
-        // Show a brief visual indicator that data is being refreshed
-        const existingIndicator = d.querySelector('.refresh-indicator');
-        if (existingIndicator) {
-            existingIndicator.remove();
-        }
-
-        const indicator = d.createElement('div');
-        indicator.className = 'refresh-indicator';
-        indicator.style.cssText = `
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      background: #333;
-      color: #fff;
-      padding: 8px 12px;
-      border-radius: 4px;
-      font-size: 12px;
-      z-index: 1000;
-      opacity: 0.9;
-      pointer-events: none;
-    `;
-        indicator.textContent = `Updating ${chartsToRefresh.join(' & ')} prices...`;
-        d.body.appendChild(indicator);
-
-        // Remove indicator after 3 seconds
-        setTimeout(() => {
-            if (indicator.parentNode) {
-                indicator.remove();
-            }
-        }, 3000);
-
-        // Clean up cached data for charts being refreshed
-        if (refreshToday) {
-            const todayChartElement = d.querySelector('#todayChart [id*="googleChart"]');
-            if (todayChartElement) {
-                clearChartCache(todayChartElement);
-                console.log('Cleared cached chart data for today');
-            }
-        }
-
-        if (refreshTomorrow) {
-            const tomorrowChartElement = d.querySelector('#tomorrowChart [id*="googleChart"]');
-            if (tomorrowChartElement) {
-                clearChartCache(tomorrowChartElement);
-                console.log('Cleared cached chart data for tomorrow');
-            }
-        }
-
-        // Verify target elements exist before refreshing
-        const todayTarget = d.querySelector('#todayChart');
-        const tomorrowTarget = d.querySelector('#tomorrowChart');
-
-        if (refreshToday && !todayTarget) {
-            console.error('Today chart target element not found');
-            return;
-        }
-        if (refreshTomorrow && !tomorrowTarget) {
-            console.error('Tomorrow chart target element not found');
-            return;
-        }
-
-        // Trigger HTMX refresh for selected charts
-        const margin = d.body.getAttribute('data-default-margin') || '0';
-
-        try {
-            if (refreshToday) {
-                htmx.ajax('GET', `/partials/prices?date=today&margin=${margin}`, {
-                    target: '#todayChart',
-                    swap: 'outerHTML',
-                });
-            }
-            if (refreshTomorrow) {
-                htmx.ajax('GET', `/partials/prices?date=tomorrow&margin=${margin}`, {
-                    target: '#tomorrowChart',
-                    swap: 'outerHTML',
-                });
-            }
-            console.log(`Selective chart refresh requests sent for: ${chartsToRefresh.join(', ')}`);
-        } catch (error) {
-            console.error('Error refreshing charts:', error);
-        }
-
-        // Reset refresh flag after HTMX requests complete (with timeout fallback)
-        setTimeout(() => {
-            isRefreshInProgress = false;
-            console.log('Selective chart refresh completed');
-        }, 2000); // 2 second timeout to ensure flag is reset
-    };
-
-    // Helper function to clear chart cache
-    function clearChartCache(chartElement) {
-        if (!chartElement) return;
-
-        // Clear timers
-        if (chartElement._nowLineTimer) {
-            clearInterval(chartElement._nowLineTimer);
-            clearTimeout(chartElement._nowLineTimer);
-            delete chartElement._nowLineTimer;
-        }
-
-        // Clear event handlers
-        if (chartElement._visibilityHandler) {
-            document.removeEventListener('visibilitychange', chartElement._visibilityHandler);
-            delete chartElement._visibilityHandler;
-        }
-        if (chartElement._focusHandler) {
-            window.removeEventListener('focus', chartElement._focusHandler);
-            delete chartElement._focusHandler;
-        }
-        if (chartElement._pageShowHandler) {
-            window.removeEventListener('pageshow', chartElement._pageShowHandler);
-            delete chartElement._pageShowHandler;
-        }
-        if (chartElement._pageHideHandler) {
-            window.removeEventListener('pagehide', chartElement._pageHideHandler);
-            delete chartElement._pageHideHandler;
-        }
-
-        // Clear cached chart data
-        delete chartElement._chartInstance;
-        delete chartElement._chartData;
-        delete chartElement._validData;
-        delete chartElement._granularity;
-        delete chartElement._originalPriceRange;
-    }
 
     // Global function to refresh charts (fetch new data from server) - backwards compatibility
     window.refreshCharts = function () {
         // Use selective refresh with both charts enabled for backwards compatibility
-        window.refreshChartsSelective(true, true);
+        refreshChartsSelective(true, true);
     };
 
     // Function to update current price display in header
@@ -907,7 +1065,7 @@
         console.log('[FALLBACK CHECK] Running at', new Date().toLocaleTimeString());
         if (!document.hidden) {
             const priceEl = d.getElementById('current-price');
-            const todayChartElement = d.querySelector('#todayChart [id*="googleChart"]');
+            const todayChartElement = d.querySelector('#todayChart canvas[id^="chart_"]');
             console.log('[FALLBACK CHECK] Price element:', priceEl ? 'EXISTS' : 'MISSING', 'Chart element:', todayChartElement ? 'EXISTS' : 'MISSING', 'Has _validData:', todayChartElement && todayChartElement._validData ? 'YES' : 'NO', 'Text:', priceEl ? priceEl.textContent : 'N/A');
             if (priceEl && todayChartElement && todayChartElement._validData && priceEl.textContent === '-- c/kWh') {
                 console.log('[FALLBACK] Conditions met! Calling updateCurrentPrice()');
@@ -923,6 +1081,34 @@
             console.log('[FALLBACK CHECK] Document is hidden, skipping');
         }
     }, 15000); // Check every 15 seconds
+
+    function ensureMissingDataRefreshed() {
+        const metadata = window.chartDataMetadata || {};
+        const missingToday =
+            !metadata.today ||
+            !metadata.today.intervalCount ||
+            (metadata.today.expectedIntervalCount &&
+                metadata.today.intervalCount < metadata.today.expectedIntervalCount);
+        const missingTomorrow =
+            !metadata.tomorrow ||
+            !metadata.tomorrow.intervalCount ||
+            (metadata.tomorrow.expectedIntervalCount &&
+                metadata.tomorrow.intervalCount < metadata.tomorrow.expectedIntervalCount);
+        if (missingToday || missingTomorrow) {
+            console.warn('Missing chart data detected, triggering recovery refresh', {
+                missingToday,
+                missingTomorrow,
+            });
+            window.refreshChartsSelective(missingToday, missingTomorrow);
+        }
+    }
+
+    setInterval(() => {
+        if (!document.hidden) {
+            window.updateNowLineImmediately();
+            ensureMissingDataRefreshed();
+        }
+    }, 15 * 60 * 1000);
 
     // Fullscreen toggle functionality
     const fullscreenBtn = d.getElementById('fullscreen-btn');

@@ -79,16 +79,13 @@
     </header>
 
     <main class="charts">
-        <section id="todayChart" hx-get="/partials/prices?date=today&amp;margin={{ '%.3f' % (margin_cents or 0.0) }}"
-            hx-trigger="load from:body" hx-swap="outerHTML">
+        <section id="todayChart" class="chart" data-chart-role="today">
             <div class="chart-head">Today</div>
             <div class="chart-body">
                 <div class="chart-placeholder"></div>
             </div>
         </section>
-        <section id="tomorrowChart"
-            hx-get="/partials/prices?date=tomorrow&amp;margin={{ '%.3f' % (margin_cents or 0.0) }}"
-            hx-trigger="load from:body" hx-swap="outerHTML">
+        <section id="tomorrowChart" class="chart" data-chart-role="tomorrow">
             <div class="chart-head">Tomorrow</div>
             <div class="chart-body">
                 <div class="chart-placeholder"></div>

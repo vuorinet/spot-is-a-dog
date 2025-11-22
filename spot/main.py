@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import typing as t
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -17,6 +17,7 @@ from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    Response,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +38,8 @@ DEFAULT_MARGIN_CENTS_PER_KWH = float(
 )
 VAT_RATE = 0.255
 HELSINKI_TZ = tz.gettz("Europe/Helsinki")
+QUARTER_DAY_INTERVALS = 96
+DEFAULT_GRANULARITY: t.Literal["quarter_hour"] = "quarter_hour"
 
 
 @dataclass(frozen=True)
@@ -49,32 +52,145 @@ class PriceInterval:
 @dataclass(frozen=True)
 class DayPrices:
     market: str
-    granularity: t.Literal["hour", "quarter_hour"]
+    granularity: t.Literal["quarter_hour"]
     intervals: list[PriceInterval]
     published_at_utc: datetime | None
 
 
 @dataclass
+class DayMetadata:
+    granularity: t.Literal["quarter_hour"] = DEFAULT_GRANULARITY
+    expected_intervals: int = QUARTER_DAY_INTERVALS
+    published_at_utc: datetime | None = None
+    last_fetched_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass
 class Cache:
-    today: DayPrices | None = None
-    tomorrow: DayPrices | None = None
+    intervals: list[PriceInterval] = field(default_factory=list)
+    day_metadata: dict[date, DayMetadata] = field(default_factory=dict)
     last_refresh_utc: datetime | None = None
+
+    def prune(self, now_utc: datetime | None = None) -> None:
+        reference_local = (
+            now_utc.astimezone(HELSINKI_TZ) if now_utc else datetime.now(tz=HELSINKI_TZ)
+        )
+        current_local_date = reference_local.date()
+        keep_from = current_local_date
+        self.intervals = [
+            it for it in self.intervals if _local_date(it.start_utc) >= keep_from
+        ]
+        valid_dates = {_local_date(it.start_utc) for it in self.intervals}
+        for day_key in list(self.day_metadata.keys()):
+            if day_key not in valid_dates:
+                self.day_metadata.pop(day_key, None)
+
+    def upsert_day(self, target_date: date, day_prices: DayPrices) -> None:
+        now_utc = datetime.now(UTC)
+        self.intervals = [
+            it for it in self.intervals if _local_date(it.start_utc) != target_date
+        ]
+        self.intervals.extend(day_prices.intervals)
+        self.intervals.sort(key=lambda it: it.start_utc)
+        self.day_metadata[target_date] = _metadata_from_day_prices(
+            day_prices,
+            fetched_at=now_utc,
+        )
+        self.last_refresh_utc = now_utc
+        self.prune(now_utc)
+
+    def intervals_for_date(self, target_date: date) -> list[PriceInterval]:
+        return [it for it in self.intervals if _local_date(it.start_utc) == target_date]
+
+    def has_complete_day(self, target_date: date) -> bool:
+        meta = self.day_metadata.get(target_date)
+        if not meta:
+            return False
+        intervals = self.intervals_for_date(target_date)
+        return len(intervals) >= meta.expected_intervals
 
 
 cache = Cache()
+background_tasks: list[asyncio.Task] = []
 
 
-def _get_expected_intervals(granularity: t.Literal["hour", "quarter_hour"]) -> int:
-    """Get expected number of intervals per day based on granularity.
+def _track_background_task(
+    coro: t.Coroutine[t.Any, t.Any, t.Any], name: str
+) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    task.set_name(name)
+    background_tasks.append(task)
 
-    Note: This assumes standard 24-hour days. DST days (23/25 hours)
-    will have different counts and should be handled separately.
-    """
-    if granularity == "hour":
-        return 24  # 24 hours per day
-    if granularity == "quarter_hour":
-        return 96  # 4 * 24 = 96 fifteen-minute intervals per day
-    raise ValueError(f"Unknown granularity: {granularity}")
+    def _cleanup(fut: asyncio.Task) -> None:
+        if fut in background_tasks:
+            background_tasks.remove(fut)
+
+    task.add_done_callback(_cleanup)
+    logger.debug("Scheduled background task %s", name)
+    return task
+
+
+def _local_date(dt: datetime) -> date:
+    return dt.astimezone(HELSINKI_TZ).date()
+
+
+def _metadata_from_day_prices(
+    day_prices: DayPrices,
+    *,
+    fetched_at: datetime | None = None,
+) -> DayMetadata:
+    return DayMetadata(
+        granularity=DEFAULT_GRANULARITY,
+        expected_intervals=QUARTER_DAY_INTERVALS,
+        published_at_utc=day_prices.published_at_utc,
+        last_fetched_utc=fetched_at or datetime.now(UTC),
+    )
+
+
+def resolve_target_date(
+    date_str: str,
+    now_hel: datetime,
+) -> tuple[date, bool]:
+    today = now_hel.date()
+    tomorrow = today + timedelta(days=1)
+
+    if date_str == "today":
+        return today, True
+    if date_str == "tomorrow":
+        return tomorrow, True
+
+    try:
+        target = datetime.fromisoformat(date_str).date()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid date") from exc
+
+    persist = target in {today, tomorrow}
+    return target, persist
+
+
+def create_placeholder_intervals(
+    target_date: date,
+) -> list[PriceInterval]:
+    step = timedelta(minutes=15)
+    count = QUARTER_DAY_INTERVALS
+
+    start_local = datetime.combine(
+        target_date,
+        datetime.min.time(),
+        tzinfo=HELSINKI_TZ,
+    )
+
+    intervals: list[PriceInterval] = []
+    for i in range(count):
+        start_ts = (start_local + i * step).astimezone(UTC)
+        intervals.append(
+            PriceInterval(
+                start_utc=start_ts,
+                end_utc=start_ts + step,
+                price_eur_per_mwh=0.0,
+            ),
+        )
+    return intervals
 
 
 class ProxyHeadersMiddleware(BaseHTTPMiddleware):
@@ -166,9 +282,7 @@ def create_app() -> FastAPI:
         logger.info(
             f"Fetching prices for date: {target_date} (Helsinki time: {datetime.now(tz=HELSINKI_TZ)})",
         )
-        # Try 15-minute resolution first for dates after Oct 1, 2025
-        # For testing: enable 15-minute simulation for current dates
-        prefer_15min = target_date >= date(2025, 10, 1) or target_date >= date.today()
+        prefer_15min = True
         if not ENTSOE_API_TOKEN:
             raise RuntimeError("ENTSOE_API_TOKEN is required")
         ds = await fetch_day_ahead_prices(
@@ -185,7 +299,7 @@ def create_app() -> FastAPI:
         )
         return DayPrices(
             market=ds.market,
-            granularity=ds.granularity,
+            granularity=DEFAULT_GRANULARITY,
             intervals=intervals,
             published_at_utc=ds.published_at_utc,
         )
@@ -214,183 +328,93 @@ def create_app() -> FastAPI:
                 # Remove failed callbacks
                 cache_event_callbacks.remove(callback)
 
-    async def ensure_cache_now() -> None:
-        # Minimal: populate today and attempt tomorrow
-        now_hel = datetime.now(tz=HELSINKI_TZ)
-        today_d = now_hel.date()
+    async def fetch_and_store_day(
+        target_date: date,
+        *,
+        label: str,
+    ) -> bool:
+        logger.info("Fetching %s prices for %s", label, target_date)
+        try:
+            dp = await fetch_prices_for_day(target_date)
+        except DataNotAvailable as exc:
+            logger.info(
+                "%s prices not available yet for %s: %s",
+                label.title(),
+                target_date,
+                exc,
+            )
+            return False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to fetch %s prices for %s", label, target_date)
+            return False
+
+        cache.upsert_day(target_date, dp)
         logger.info(
-            f"ensure_cache_now() called for {today_d} at Helsinki time {now_hel}",
+            "Cached %s prices (%d intervals, %s granularity)",
+            label,
+            len(dp.intervals),
+            dp.granularity,
         )
+        await notify_cache_event(
+            "day_updated",
+            {
+                "date": target_date.isoformat(),
+                "granularity": dp.granularity,
+                "intervals": len(dp.intervals),
+            },
+        )
+        return True
 
-        # Check if we need to rotate cache at midnight or clean up contaminated data
-        cache_rotated = False
-        if cache.today is not None:
-            # Debug: Check what dates are actually in today's cache
-            today_dates = set()
-            for it in cache.today.intervals:
-                interval_date = it.start_utc.astimezone(HELSINKI_TZ).date()
-                today_dates.add(interval_date)
+    async def ensure_days_available(target_dates: list[date]) -> None:
+        """Ensure specified local dates have fully cached data."""
+        if not target_dates:
+            return
 
-            logger.info(
-                f"Midnight rotation debug: today_d={today_d}, today cache contains dates: {sorted(today_dates)}",
-            )
+        cache.prune(datetime.now(UTC))
+        for target_date in target_dates:
+            if cache.has_complete_day(target_date):
+                continue
+            await fetch_and_store_day(target_date, label=target_date.isoformat())
 
-            # Check if cached "today" data contains the right date
-            today_intervals = [
-                it
-                for it in cache.today.intervals
-                if it.start_utc.astimezone(HELSINKI_TZ).date() == today_d
-            ]
-            total_intervals = len(cache.today.intervals)
-            logger.info(
-                f"Today cache: {len(today_intervals)}/{total_intervals} intervals match {today_d}",
-            )
+    async def ensure_day_available(
+        target_date: date,
+        *,
+        persist: bool,
+    ) -> tuple[list[PriceInterval], DayMetadata | None]:
+        """Return all intervals for a date, fetching from ENTSOE if needed."""
+        intervals = cache.intervals_for_date(target_date)
+        metadata = cache.day_metadata.get(target_date)
 
-            # If cache is contaminated (contains wrong dates) or empty for today, fix it
-            if len(today_intervals) == 0:
-                # No intervals for today - try to rotate from tomorrow
-                if cache.tomorrow is not None:
-                    # Debug: Check what dates are actually in tomorrow's cache
-                    tomorrow_dates = set()
-                    for it in cache.tomorrow.intervals:
-                        interval_date = it.start_utc.astimezone(HELSINKI_TZ).date()
-                        tomorrow_dates.add(interval_date)
+        if intervals:
+            return intervals, metadata
 
-                    logger.info(
-                        f"Midnight rotation debug: today_d={today_d}, tomorrow cache contains dates: {sorted(tomorrow_dates)}",
-                    )
+        logger.info("Cache miss for %s, fetching directly", target_date)
+        try:
+            dp = await fetch_prices_for_day(target_date)
+        except DataNotAvailable as exc:
+            logger.warning("Data not available for %s: %s", target_date, exc)
+            return [], None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to fetch data for %s", target_date)
+            raise
 
-                    tomorrow_intervals = [
-                        it
-                        for it in cache.tomorrow.intervals
-                        if it.start_utc.astimezone(HELSINKI_TZ).date() == today_d
-                    ]
-                    logger.info(
-                        f"Tomorrow intervals matching {today_d}: {len(tomorrow_intervals)} out of {len(cache.tomorrow.intervals)} total",
-                    )
-                    if tomorrow_intervals:
-                        logger.info(
-                            f"Midnight transition: rotating tomorrow's cache to today ({today_d})",
-                        )
-                        # Create clean cache with only today's intervals
-                        cache.today = replace(
-                            cache.tomorrow,
-                            intervals=tomorrow_intervals,
-                        )
-                        cache.tomorrow = None
-                        cache_rotated = True
-                        await notify_cache_event(
-                            "cache_rotated",
-                            {"new_today": today_d.isoformat()},
-                        )
-                    else:
-                        logger.warning(
-                            f"No tomorrow intervals match today's date {today_d}",
-                        )
-                        cache.today = None  # Clear contaminated cache
-                else:
-                    logger.warning(
-                        "No today intervals and no tomorrow cache to rotate from",
-                    )
-                    cache.today = None  # Clear contaminated cache
-            elif len(today_intervals) != total_intervals:
-                # Cache is contaminated with intervals from other dates - clean it
-                logger.info(
-                    f"Cleaning contaminated today cache: keeping {len(today_intervals)}/{total_intervals} intervals for {today_d}",
-                )
-                cache.today = replace(cache.today, intervals=today_intervals)
-            else:
-                logger.debug(
-                    f"Today cache is clean: {len(today_intervals)} intervals for {today_d}",
-                )
-
-        # Check if we need to fetch today's data
-        need_today = True
-        if cache.today is not None:
-            # Check if any interval in cached data matches today's date
-            for interval in cache.today.intervals:
-                interval_date = interval.start_utc.astimezone(HELSINKI_TZ).date()
-                if interval_date == today_d:
-                    need_today = False
-                    break
-
-        if need_today:
-            logger.info("Cache miss: Fetching today's prices for %s", today_d)
-            try:
-                cache.today = await fetch_prices_for_day(today_d)
-                logger.info(
-                    "Successfully cached today's prices (%d intervals)",
-                    len(cache.today.intervals),
-                )
-                await notify_cache_event("today_updated", {"date": today_d.isoformat()})
-            except DataNotAvailable as e:
-                logger.warning(
-                    "Today's prices not available yet for %s: %s; will retry",
-                    today_d,
-                    e,
-                )
-                cache.today = None
-            except Exception as e:
-                logger.error("Failed to fetch today's prices for %s: %s", today_d, e)
-                cache.today = None
+        if persist:
+            cache.upsert_day(target_date, dp)
+            metadata = cache.day_metadata.get(target_date)
         else:
-            logger.info(
-                "Cache hit: Using cached today's prices (%d intervals)",
-                len(cache.today.intervals),
-            )
+            metadata = _metadata_from_day_prices(dp)
 
-        # Check if we need to fetch tomorrow's data (either missing or incomplete)
-        need_tomorrow = False
-        tomorrow_d = today_d + timedelta(days=1)
-
-        if cache.tomorrow is None:
-            need_tomorrow = True
-            logger.debug("Cache miss: No tomorrow data cached")
-        else:
-            # Check if tomorrow data is complete (all 24 hours)
-            tomorrow_intervals = [
-                it
-                for it in cache.tomorrow.intervals
-                if it.start_utc.astimezone(HELSINKI_TZ).date() == tomorrow_d
-            ]
-            # Check if tomorrow data is complete based on granularity
-            expected_intervals = _get_expected_intervals(cache.tomorrow.granularity)
-            if len(tomorrow_intervals) < expected_intervals:
-                need_tomorrow = True
-                logger.info(
-                    "Incomplete tomorrow data: only %d/%d intervals cached, refetching",
-                    len(tomorrow_intervals),
-                    expected_intervals,
-                )
-
-        if need_tomorrow:
-            logger.debug("Attempting to fetch tomorrow's prices for %s", tomorrow_d)
-            try:
-                cache.tomorrow = await fetch_prices_for_day(tomorrow_d)
-                logger.info(
-                    "Successfully cached tomorrow's prices (%d intervals)",
-                    len(cache.tomorrow.intervals),
-                )
-                await notify_cache_event(
-                    "tomorrow_updated",
-                    {"date": tomorrow_d.isoformat()},
-                )
-            except DataNotAvailable:
-                logger.debug("Tomorrow's prices not available yet")
-                # Don't clear existing partial data - keep what we have
-        else:
-            logger.info(
-                "Cache hit: Using cached tomorrow's prices (%d intervals)",
-                len(cache.tomorrow.intervals),
-            )
-
-        cache.last_refresh_utc = datetime.now(UTC)
+        return dp.intervals, metadata
 
     @app.get("/", response_class=HTMLResponse)
     async def home(
         request: Request,
         margin: float | None = Query(default=None),
-    ) -> HTMLResponse:
+    ) -> Response:
         # If no margin parameter provided, redirect to show default margin in URL
         if margin is None:
             from fastapi.responses import RedirectResponse
@@ -402,9 +426,10 @@ def create_app() -> FastAPI:
         margin = validate_margin(margin)
 
         # Only ensure cache if it's not already populated (avoid delays on first page load)
-        if cache.today is None:
+        if not cache.intervals:
             logger.info("Cache not warmed up yet, ensuring cache for first page load")
-            await ensure_cache_now()
+            today = datetime.now(tz=HELSINKI_TZ).date()
+            await ensure_days_available([today, today + timedelta(days=1)])
         else:
             logger.debug("Cache already warm, serving page immediately")
 
@@ -446,52 +471,33 @@ def create_app() -> FastAPI:
         global_max = float("-inf")
         global_min = float("inf")
 
-        # Cache should already be populated from startup
-        if cache.today is None:
+        if not cache.intervals:
             logger.warning(
-                "Cache not warm during price range calculation, ensuring cache",
+                "Cache empty during price range calculation, ensuring cache",
             )
-            await ensure_cache_now()
+            today = datetime.now(tz=HELSINKI_TZ).date()
+            await ensure_days_available([today, today + timedelta(days=1)])
 
-        datasets_checked = 0
         intervals_processed = 0
 
-        # Check both today and tomorrow data for global range
-        for name, dp in [("today", cache.today), ("tomorrow", cache.tomorrow)]:
-            if dp is None:
-                logger.debug(f"No data for {name}")
-                continue
+        for it in cache.intervals:
+            spot_cents_with_vat = eur_mwh_to_cents_kwh(it.price_eur_per_mwh)
+            total_price = spot_cents_with_vat + margin_cents
 
-            datasets_checked += 1
-            logger.debug(f"Processing {name} data with {len(dp.intervals)} intervals")
-
-            for it in dp.intervals:
-                # Convert EUR/MWh to cents/kWh (with VAT included)
-                spot_cents_with_vat = eur_mwh_to_cents_kwh(it.price_eur_per_mwh)
-
-                # Calculate the total price (spot + margin) that will be displayed
-                total_price = spot_cents_with_vat + margin_cents
-
-                # Debug logging for scaling investigation
-                if (
-                    intervals_processed < 5 or total_price > global_max
-                ):  # Log first few and any new maximums
-                    logger.debug(
-                        f"Price interval {intervals_processed}: spot={spot_cents_with_vat:.2f}, total={total_price:.2f} (margin={margin_cents:.2f})",
-                    )
-
-                # Track the actual range of total prices
-                global_max = max(global_max, total_price)
-                global_min = min(
-                    global_min,
+            if intervals_processed < 5 or total_price > global_max:
+                logger.debug(
+                    "Interval %d: spot=%.2f, total=%.2f (margin=%.2f)",
+                    intervals_processed,
                     spot_cents_with_vat,
-                )  # Spot price can be negative, margin is always added on top
+                    total_price,
+                    margin_cents,
+                )
 
-                intervals_processed += 1
+            global_max = max(global_max, total_price)
+            global_min = min(global_min, spot_cents_with_vat)
+            intervals_processed += 1
 
-        logger.debug(
-            f"Processed {datasets_checked} datasets, {intervals_processed} intervals",
-        )
+        logger.debug("Processed %d intervals for scaling", intervals_processed)
 
         # If no data found, use reasonable defaults
         if global_min == float("inf") or global_max == float("-inf"):
@@ -533,9 +539,7 @@ def create_app() -> FastAPI:
         logger.info(
             f"Y-axis range calculation: min={global_min:.2f} -> {min_price_rounded}, max={global_max:.2f} -> {max_price_rounded}",
         )
-        logger.debug(
-            f"Scaling calculation details: datasets={datasets_checked}, intervals={intervals_processed}",
-        )
+        logger.debug("Scaling calculation details: intervals=%d", intervals_processed)
 
         return min_price_rounded, max_price_rounded
 
@@ -553,85 +557,24 @@ def create_app() -> FastAPI:
             if margin is not None:
                 margin_cents = validate_margin(margin_cents)
 
-            # Handle special date strings and convert to actual dates in Helsinki timezone
             now_hel = datetime.now(tz=HELSINKI_TZ)
-            if date_str == "today":
-                target = now_hel.date()
-                logger.debug(
-                    "/api/chart-data date=today (%s) margin=%.3f",
-                    target,
-                    margin_cents,
-                )
-            elif date_str == "tomorrow":
-                target = (now_hel + timedelta(days=1)).date()
-                logger.debug(
-                    "/api/chart-data date=tomorrow (%s) margin=%.3f",
-                    target,
-                    margin_cents,
-                )
-            else:
-                target = datetime.fromisoformat(date_str).date()
-                logger.debug(
-                    "/api/chart-data date=%s margin=%.3f",
-                    target,
-                    margin_cents,
-                )
-
-            # Get all available data from cache first (cache should be warm from startup)
-            # But also check if cache contains stale data (e.g., after midnight)
-            cache_needs_refresh = False
-            if cache.today is None:
-                logger.warning(
-                    "Cache not warm during chart data request, ensuring cache",
-                )
-                cache_needs_refresh = True
-            else:
-                # Check if today's cache contains data for the current date
-                today_date = now_hel.date()
-                today_intervals_for_current_date = [
-                    it
-                    for it in cache.today.intervals
-                    if it.start_utc.astimezone(HELSINKI_TZ).date() == today_date
-                ]
-                if len(today_intervals_for_current_date) == 0:
-                    logger.warning(
-                        f"Today's cache contains no data for current date {today_date}, ensuring cache",
-                    )
-                    cache_needs_refresh = True
-                else:
-                    logger.debug("Using warm cache for chart data")
-
-            if cache_needs_refresh:
-                await ensure_cache_now()
+            target, persist = resolve_target_date(date_str, now_hel)
+            logger.debug(
+                "/api/chart-data date=%s persist=%s margin=%.3f",
+                target,
+                persist,
+                margin_cents,
+            )
 
             # Calculate global price range for consistent scaling
             global_min_price, global_max_price = await calculate_global_price_range(
                 margin_cents,
             )
 
-            # Determine which data to use based on the requested date
-            now_hel = datetime.now(tz=HELSINKI_TZ)
-            today_date = now_hel.date()
-            tomorrow_date = today_date + timedelta(days=1)
-
-            # Use cache data directly - cache should already be populated by ensure_cache_now()
-            dp = None
-            if target == today_date and cache.today:
-                logger.debug(f"Using today's cache for {target}")
-                dp = cache.today
-            elif target == tomorrow_date and cache.tomorrow:
-                logger.debug(f"Using tomorrow's cache for {target}")
-                dp = cache.tomorrow
-            else:
-                # Only fetch directly if not today/tomorrow or cache miss
-                logger.warning(
-                    f"Cache miss for {target}, fetching directly from ENTSO-E",
-                )
-                try:
-                    dp = await fetch_prices_for_day(target)
-                except Exception as e:
-                    logger.error(f"Failed to fetch data for {target}: {e}")
-                    dp = None
+            intervals, metadata = await ensure_day_available(
+                target,
+                persist=persist,
+            )
 
             LOW_PRICE = 5.0  # cents/kWh
             HIGH_PRICE = 15.0  # cents/kWh
@@ -639,20 +582,13 @@ def create_app() -> FastAPI:
             chart_data = []
 
             # Process all intervals and filter by target date in Helsinki timezone
-            if dp and dp.intervals:
-                for it in dp.intervals:
-                    # Convert to Helsinki timezone
+            if intervals:
+                for it in intervals:
                     start_helsinki = it.start_utc.astimezone(HELSINKI_TZ)
-                    interval_date = start_helsinki.date()
-
-                    # Skip intervals that don't match the target date
-                    if interval_date != target:
+                    if start_helsinki.date() != target:
                         continue
 
-                    # Convert EUR/MWh to cents/kWh (with VAT already included)
                     spot_cents_with_vat = eur_mwh_to_cents_kwh(it.price_eur_per_mwh)
-
-                    # Split electricity price into low/medium/high buckets like Angular component
                     low_electricity = (
                         spot_cents_with_vat if spot_cents_with_vat < LOW_PRICE else 0
                     )
@@ -665,15 +601,8 @@ def create_app() -> FastAPI:
                         spot_cents_with_vat if spot_cents_with_vat >= HIGH_PRICE else 0
                     )
 
-                    # Create time label based on granularity
-                    if dp.granularity == "quarter_hour":
-                        # For 15-minute intervals, use sequential integer indices
-                        # This prevents Google Charts from generating intermediate ticks
-                        quarter = start_helsinki.minute // 15
-                        time_label = str(start_helsinki.hour * 4 + quarter)
-                    else:
-                        # For hourly intervals, use hour only
-                        time_label = str(start_helsinki.hour)
+                    quarter = start_helsinki.minute // 15
+                    time_label = str(start_helsinki.hour * 4 + quarter)
 
                     chart_data.append(
                         [
@@ -691,42 +620,20 @@ def create_app() -> FastAPI:
 
             # Ensure all intervals are represented for consistent chart layout
             complete_chart_data = []
-            actual_granularity = "hour"  # Default fallback
+            actual_granularity = DEFAULT_GRANULARITY
+            actual_interval_count = len(chart_data)
 
-            if dp and dp.granularity == "quarter_hour":
-                # For 15-minute data, create complete 96-interval chart
-                actual_granularity = "quarter_hour"
-                chart_data_dict = {row[0]: row for row in chart_data}
-
-                for i in range(96):
-                    time_key = str(i)
-                    if time_key in chart_data_dict:
-                        # Use existing data
-                        complete_chart_data.append(chart_data_dict[time_key])
-                    else:
-                        # Fill missing interval with zeros (margin still applies)
-                        complete_chart_data.append(
-                            [time_key, 0, 0, 0, margin_cents],
-                        )
-            else:
-                # For hourly data or when no data available, create complete 24-hour chart
-                actual_granularity = "hour"
-                chart_data_dict = (
-                    {int(row[0]): row for row in chart_data} if chart_data else {}
-                )
-
-                for hour in range(24):
-                    hour_str = str(hour)
-                    if hour in chart_data_dict:
-                        # Use existing data
-                        complete_chart_data.append(chart_data_dict[hour])
-                    else:
-                        # Fill missing hour with zeros (margin still applies)
-                        complete_chart_data.append([hour_str, 0, 0, 0, margin_cents])
+            chart_data_dict = {row[0]: row for row in chart_data}
+            for i in range(QUARTER_DAY_INTERVALS):
+                time_key = str(i)
+                if time_key in chart_data_dict:
+                    complete_chart_data.append(chart_data_dict[time_key])
+                else:
+                    complete_chart_data.append([time_key, 0, 0, 0, margin_cents])
 
             # Handle case where no actual price data found
             if not chart_data:
-                logger.warning(f"No price data found for date {target}")
+                logger.warning("No price data found for date %s", target)
                 return JSONResponse(
                     {
                         "data": complete_chart_data,
@@ -734,8 +641,9 @@ def create_app() -> FastAPI:
                         "minPrice": global_min_price,
                         "dateString": target.strftime("%A %m/%d/%Y"),
                         "dateIso": target.isoformat(),  # ISO format for client-side localization
-                        "granularity": actual_granularity,  # Use the determined granularity
-                        "intervalCount": len(complete_chart_data),
+                        "granularity": actual_granularity,
+                        "intervalCount": actual_interval_count,
+                        "expectedIntervalCount": len(complete_chart_data),
                         "error": "No price data available for this date",
                     },
                 )
@@ -748,7 +656,8 @@ def create_app() -> FastAPI:
                     "dateString": target.strftime("%A %m/%d/%Y"),
                     "dateIso": target.isoformat(),  # ISO format for client-side localization
                     "granularity": actual_granularity,
-                    "intervalCount": len(complete_chart_data),
+                    "intervalCount": actual_interval_count,
+                    "expectedIntervalCount": len(complete_chart_data),
                 },
             )
         except Exception as e:
@@ -786,9 +695,13 @@ def create_app() -> FastAPI:
             )
         return margin
 
-    def build_view_model(dp: DayPrices, margin_cents: float) -> dict[str, t.Any]:
+    def build_view_model(
+        intervals: list[PriceInterval],
+        margin_cents: float,
+        granularity: t.Literal["quarter_hour"],
+    ) -> dict[str, t.Any]:
         entries: list[dict[str, t.Any]] = []
-        for it in dp.intervals:
+        for it in intervals:
             spot_cents = eur_mwh_to_cents_kwh(it.price_eur_per_mwh)
             total_cents = max(0.0, spot_cents) + max(0.0, margin_cents)
             entries.append(
@@ -805,7 +718,7 @@ def create_app() -> FastAPI:
         return {
             "entries": entries,
             "maxTotal": max_total,
-            "granularity": dp.granularity,
+            "granularity": granularity,
         }
 
     @app.get("/partials/prices", response_class=HTMLResponse)
@@ -813,316 +726,128 @@ def create_app() -> FastAPI:
         request: Request,
         date: str,
         margin: float | None = None,
+        role: str = "today",
     ) -> HTMLResponse:
         margin_cents = margin if margin is not None else DEFAULT_MARGIN_CENTS_PER_KWH
         # Validate margin parameter if provided
         if margin is not None:
             margin_cents = validate_margin(margin_cents)
-        logger.debug("/partials/prices date=%s margin=%.3f", date, margin_cents)
+        logger.debug(
+            "/partials/prices date=%s role=%s margin=%.3f",
+            date,
+            role,
+            margin_cents,
+        )
         now_hel = datetime.now(tz=HELSINKI_TZ)
-        base_date = now_hel.date()
-        if date == "today":
-            # Check if today's cache contains data for the current date
-            if cache.today is not None:
-                today_intervals_for_current_date = [
-                    it
-                    for it in cache.today.intervals
-                    if it.start_utc.astimezone(HELSINKI_TZ).date() == base_date
-                ]
-                if len(today_intervals_for_current_date) > 0:
-                    dp = cache.today
-                else:
-                    logger.warning(
-                        f"Today's cache contains no data for current date {base_date}, fetching fresh data",
-                    )
-                    dp = await fetch_prices_for_day(base_date)
-            else:
-                dp = await fetch_prices_for_day(base_date)
-        elif date == "tomorrow":
-            dp = cache.tomorrow
-            if dp is None:
-                # Build margin-only skeleton for tomorrow
-                logger.info(
-                    "Tomorrow not yet published; rendering margin-only skeleton",
-                )
-                tomorrow_date = base_date + timedelta(days=1)
-                start_utc = datetime.combine(
-                    tomorrow_date,
-                    datetime.min.time(),
-                    tzinfo=UTC,
-                )
+        target, persist = resolve_target_date(date, now_hel)
+        intervals, metadata = await ensure_day_available(
+            target,
+            persist=persist,
+        )
+        filtered_intervals = [
+            it for it in intervals if _local_date(it.start_utc) == target
+        ]
 
-                # Use 15-minute intervals if date is after Oct 1, 2025 or for testing current dates
-                if tomorrow_date >= date(2025, 10, 1) or tomorrow_date >= date.today():
-                    # Create 96 fifteen-minute intervals
-                    intervals = [
-                        PriceInterval(
-                            start_utc + i * timedelta(minutes=15),
-                            start_utc + (i + 1) * timedelta(minutes=15),
-                            0.0,
-                        )
-                        for i in range(96)
-                    ]
-                    granularity = "quarter_hour"
-                else:
-                    # Create 24 hourly intervals
-                    intervals = [
-                        PriceInterval(
-                            start_utc + i * timedelta(hours=1),
-                            start_utc + (i + 1) * timedelta(hours=1),
-                            0.0,
-                        )
-                        for i in range(24)
-                    ]
-                    granularity = "hour"
+        if not filtered_intervals:
+            filtered_intervals = create_placeholder_intervals(target)
+            metadata = metadata or DayMetadata(
+                granularity=DEFAULT_GRANULARITY,
+                expected_intervals=QUARTER_DAY_INTERVALS,
+                published_at_utc=None,
+                last_fetched_utc=datetime.now(UTC),
+            )
 
-                dp = DayPrices(
-                    market="FI",
-                    granularity=granularity,
-                    intervals=intervals,
-                    published_at_utc=None,
-                )
-        else:
-            try:
-                target = datetime.fromisoformat(date).date()
-            except Exception as exc:
-                logger.warning("Invalid date param: %s", date)
-                raise HTTPException(status_code=400, detail="Invalid date") from exc
-            dp = await fetch_prices_for_day(target)
-
-        vm = build_view_model(dp, margin_cents)
+        granularity = metadata.granularity if metadata else DEFAULT_GRANULARITY
+        vm = build_view_model(filtered_intervals, margin_cents, granularity)
         return templates.TemplateResponse(
             "partials/prices.html",
             {
                 "request": request,
                 "vm": vm,
+                "chart_role": role,
+                "chart_date_iso": target.isoformat(),
             },
         )
 
     async def startup_tasks():
-        # Initial fetch with retry/backoff until we have today's data
-        backoff = 10
-        while True:
-            try:
-                logger.info("Startup fetch attempt (backoff=%ss)", backoff)
-                await ensure_cache_now()
-                if cache.today is not None:
-                    logger.info("Startup fetch succeeded; cache is warm")
-                    break
-            except Exception:
-                logger.exception("Startup fetch failed; will retry")
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 300)
+        """Warm cache on startup and launch background refresh loops."""
 
-        async def intelligent_polling_loop():
-            """Intelligent polling that adapts based on data availability and time"""
-            consecutive_failures = 0
-            last_failure_time = None
-
+        async def warmup_cache() -> None:
+            backoff = 10
             while True:
-                now = datetime.now(tz=HELSINKI_TZ)
-                today_d = now.date()
-                tomorrow_d = today_d + timedelta(days=1)
-
-                # Assess current data state with date validation
-                has_today = (
-                    cache.today is not None
-                    and any(
-                        it.start_utc.astimezone(HELSINKI_TZ).date() == today_d
-                        for it in cache.today.intervals
-                    )
-                    if cache.today
-                    else False
-                )
-
-                # Check if we have complete tomorrow data (all 24 hours)
-                has_tomorrow = False
-                if cache.tomorrow is not None:
-                    tomorrow_intervals = [
-                        it
-                        for it in cache.tomorrow.intervals
-                        if it.start_utc.astimezone(HELSINKI_TZ).date() == tomorrow_d
-                    ]
-                    # Consider tomorrow data complete based on granularity
-                    expected_intervals = _get_expected_intervals(
-                        cache.tomorrow.granularity,
-                    )
-                    has_tomorrow = len(tomorrow_intervals) >= expected_intervals
-
-                # Determine urgency based on missing critical data
-                missing_today = not has_today
-                missing_tomorrow_after_2pm = not has_tomorrow and now.hour >= 14
-
-                # Apply exponential backoff for persistent failures
-                base_interval = 60
-                if consecutive_failures > 0:
-                    backoff_multiplier = min(2**consecutive_failures, 16)  # Cap at 16x
-                    logger.debug(
-                        f"Applying backoff multiplier {backoff_multiplier}x due to {consecutive_failures} consecutive failures",
-                    )
-                else:
-                    backoff_multiplier = 1
-
-                # Calculate polling interval based on situation
-                if missing_today:
-                    # Critical: Missing today's data - aggressive polling with backoff
-                    base_interval = 60  # 1 minute base
-                    poll_interval = base_interval * backoff_multiplier
-                    logger.warning(
-                        f"Missing today's data ({today_d}) - polling every {poll_interval}s",
-                    )
-                elif missing_tomorrow_after_2pm:
-                    # Important: Missing tomorrow's data after expected publication
-                    base_interval = 300  # 5 minutes base
-                    poll_interval = base_interval * backoff_multiplier
-                    logger.warning(
-                        f"Missing tomorrow's data ({tomorrow_d}) after 14:00 - polling every {poll_interval}s",
-                    )
-                elif not has_tomorrow and (
-                    (now.hour == 13 and now.minute >= 50)
-                    or (now.hour == 14)
-                    or (now.hour == 15 and now.minute <= 30)
-                ):
-                    # Expected publication window - frequent polling only if we DON'T have tomorrow's data yet
-                    base_interval = 180  # 3 minutes base
-                    poll_interval = base_interval * min(
-                        backoff_multiplier,
-                        4,
-                    )  # Less aggressive backoff
-                    logger.debug(
-                        "In tomorrow publication window, waiting for data - frequent polling",
-                    )
-                elif has_today and has_tomorrow:
-                    # All good - infrequent maintenance polling
-                    poll_interval = 900  # 15 minutes (no backoff needed)
-                    logger.debug("All data cached - maintenance polling")
-                else:
-                    # Default case - moderate polling
-                    poll_interval = 600  # 10 minutes (no backoff needed)
-                    logger.debug("Standard polling interval")
-
-                # Attempt cache update
                 try:
-                    old_today = cache.today
-                    old_tomorrow = cache.tomorrow
+                    now = datetime.now(tz=HELSINKI_TZ)
+                    targets = [now.date(), now.date() + timedelta(days=1)]
+                    await ensure_days_available(targets)
+                    if cache.has_complete_day(now.date()) and cache.has_complete_day(
+                        now.date() + timedelta(days=1),
+                    ):
+                        logger.info("Initial cache warm-up succeeded")
+                        return
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Startup warm-up failed; retrying")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 300)
 
-                    await ensure_cache_now()
-
-                    # Log any changes
-                    if old_today is None and cache.today is not None:
-                        logger.info(
-                            f"Successfully retrieved today's prices ({today_d})",
-                        )
-                    if old_tomorrow is None and cache.tomorrow is not None:
-                        logger.info(
-                            f"Successfully retrieved tomorrow's prices ({tomorrow_d})",
-                        )
-
-                    # Check for data updates (republications) for both today and tomorrow
-                    for name, old_data, new_data in [
-                        ("today", old_today, cache.today),
-                        ("tomorrow", old_tomorrow, cache.tomorrow),
-                    ]:
-                        if old_data is not None and new_data is not None:
-                            # Check if data was republished
-                            if old_data.published_at_utc != new_data.published_at_utc:
-                                logger.info(
-                                    f"{name.title()}'s price data was republished",
-                                )
-                                # Send update event to refresh charts with new scaling
-                                await notify_cache_event(
-                                    f"{name}_updated",
-                                    {
-                                        "date": (
-                                            today_d if name == "today" else tomorrow_d
-                                        ).isoformat(),
-                                        "reason": "republished",
-                                    },
-                                )
-                            # Check if interval count changed
-                            elif len(old_data.intervals) != len(new_data.intervals):
-                                logger.info(
-                                    f"{name.title()}'s price data changed (different interval count)",
-                                )
-                                await notify_cache_event(
-                                    f"{name}_updated",
-                                    {
-                                        "date": (
-                                            today_d if name == "today" else tomorrow_d
-                                        ).isoformat(),
-                                        "reason": "interval_count_changed",
-                                    },
-                                )
-                            # Check if actual price values changed
-                            elif any(
-                                old_it.price_eur_per_mwh != new_it.price_eur_per_mwh
-                                for old_it, new_it in zip(
-                                    old_data.intervals,
-                                    new_data.intervals,
-                                    strict=False,
-                                )
-                            ):
-                                logger.info(f"{name.title()}'s price values changed")
-                                await notify_cache_event(
-                                    f"{name}_updated",
-                                    {
-                                        "date": (
-                                            today_d if name == "today" else tomorrow_d
-                                        ).isoformat(),
-                                        "reason": "price_values_changed",
-                                    },
-                                )
-
-                    # Reset failure counter on success
-                    if consecutive_failures > 0:
-                        logger.info(
-                            f"Polling recovered after {consecutive_failures} failures",
-                        )
-                        consecutive_failures = 0
-                        last_failure_time = None
-
-                except Exception as e:
-                    consecutive_failures += 1
-                    last_failure_time = now
-                    logger.exception(
-                        f"Polling attempt failed (failure #{consecutive_failures}): {e}",
-                    )
-
-                # Sleep until next poll
-                await asyncio.sleep(poll_interval)
-
-        async def midnight_cache_rotation_loop():
-            """Background task to ensure cache rotation happens at midnight even if no requests come in"""
+        async def fifteen_minute_health_check_loop():
             while True:
-                now = datetime.now(tz=HELSINKI_TZ)
-                # Calculate seconds until next midnight in Helsinki timezone
-                # Get the next day and create midnight properly with timezone
-                next_day = now.date() + timedelta(days=1)
-                next_midnight = datetime.combine(
-                    next_day,
-                    datetime.min.time(),
-                    tzinfo=HELSINKI_TZ,
-                )
-                seconds_until_midnight = (next_midnight - now).total_seconds()
+                try:
+                    now = datetime.now(tz=HELSINKI_TZ)
+                    cache.prune()
+                    today_d = now.date()
+                    tomorrow_d = today_d + timedelta(days=1)
+                    missing_today = not cache.has_complete_day(today_d)
+                    missing_tomorrow = not cache.has_complete_day(tomorrow_d)
+                    targets: list[date] = []
+                    if missing_today:
+                        targets.append(today_d)
+                    if missing_tomorrow:
+                        targets.append(tomorrow_d)
+                    if targets:
+                        await ensure_days_available(targets)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Health check loop encountered an error")
+                await asyncio.sleep(15 * 60)
 
-                # Sleep until midnight (with small buffer)
-                await asyncio.sleep(max(1, seconds_until_midnight - 30))
-
-                # Check cache rotation at midnight
-                logger.info(
-                    f"Midnight timer: checking cache rotation at {datetime.now(tz=HELSINKI_TZ)}",
-                )
-                await ensure_cache_now()
-                logger.info("Midnight cache rotation check completed")
-
-                # Sleep a bit to avoid multiple triggers
+        async def afternoon_polling_loop():
+            """Aggressively poll ENTSO-E between 14:00-14:30 Helsinki time."""
+            while True:
+                try:
+                    now = datetime.now(tz=HELSINKI_TZ)
+                    tomorrow_d = now.date() + timedelta(days=1)
+                    in_window = now.hour == 14 and now.minute <= 30
+                    if in_window and not cache.has_complete_day(tomorrow_d):
+                        fetched = await fetch_and_store_day(
+                            tomorrow_d,
+                            label=tomorrow_d.isoformat(),
+                        )
+                        await asyncio.sleep(60 if not fetched else 120)
+                        continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Afternoon polling loop failed")
                 await asyncio.sleep(60)
 
-        asyncio.create_task(intelligent_polling_loop())
-        asyncio.create_task(midnight_cache_rotation_loop())
+        _track_background_task(warmup_cache(), "warmup_cache")
+        _track_background_task(fifteen_minute_health_check_loop(), "health_check_loop")
+        _track_background_task(afternoon_polling_loop(), "afternoon_polling_loop")
 
     @app.on_event("startup")
     async def _on_startup() -> None:
         await startup_tasks()
+
+    @app.on_event("shutdown")
+    async def _on_shutdown() -> None:
+        logger.info("Shutting down background tasks")
+        for task in background_tasks:
+            task.cancel()
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
+        background_tasks.clear()
 
     return app

@@ -1,12 +1,14 @@
 {% set entries = vm.entries %}
 {% set max_total = vm.maxTotal %}
-{% set chart_date = request.query_params.get('date', 'today') %}
-{% set chart_id = 'chart_' ~ chart_date %}
-{% set date_string_id = 'dateString_' ~ chart_date %}
-<section id="{{ chart_date }}Chart" class="chart" aria-label="Prices chart" data-date="{{ chart_date }}"
-    data-margin="{{ request.query_params.get('margin', '0') }}">
+{% set chart_role = chart_role | default(request.query_params.get('role', 'today'), true) %}
+{% set chart_date = chart_date_iso | default(request.query_params.get('date', 'today'), true) %}
+{% set chart_id = 'chart_' ~ chart_role %}
+{% set date_string_id = 'dateString_' ~ chart_role %}
+{% set section_id = chart_role ~ 'Chart' %}
+<section id="{{ section_id }}" class="chart" aria-label="Prices chart" data-date="{{ chart_date }}"
+    data-role="{{ chart_role }}" data-margin="{{ request.query_params.get('margin', '0') }}">
     <div class="chart-head">
-        {{ chart_date|title }}
+        {{ chart_role|title }}
         <span class="date-string" id="{{ date_string_id }}"></span>
     </div>
     <div class="chart-body">
@@ -16,16 +18,17 @@
 
 <script>
     // Create chart for {{ chart_date }}
-    window.createChart = function (chartDate) {
+    window.createChart = function (chartDate, chartRoleParam) {
         const date = chartDate || '{{ chart_date }}';
+        const role = chartRoleParam || '{{ chart_role }}';
         const margin = '{{ request.query_params.get("margin", "0") }}';
-        const chartId = 'chart_' + date;
-        const dateStringId = 'dateString_' + date;
+        const chartId = 'chart_' + role;
+        const dateStringId = 'dateString_' + role;
         const chartElement = document.getElementById(chartId);
         const dateStringEl = document.getElementById(dateStringId);
 
         // Get chart section to update the header text
-        const chartSection = document.getElementById(date + 'Chart');
+        const chartSection = document.getElementById(role + 'Chart');
         const chartHeadEl = chartSection ? chartSection.querySelector('.chart-head') : null;
 
         if (!chartElement) {
@@ -36,7 +39,7 @@
         // Localize the "Today" or "Tomorrow" label
         if (chartHeadEl) {
             let localizedLabel;
-            if (date === 'today') {
+            if (role === 'today') {
                 const translations = {
                     'en': 'Today',
                     'fi': 'Tänään',
@@ -52,7 +55,7 @@
                 };
                 const lang = navigator.language.split('-')[0];
                 localizedLabel = translations[lang] || translations['en'];
-            } else if (date === 'tomorrow') {
+            } else if (role === 'tomorrow') {
                 const translations = {
                     'en': 'Tomorrow',
                     'fi': 'Huomenna',
@@ -69,7 +72,7 @@
                 const lang = navigator.language.split('-')[0];
                 localizedLabel = translations[lang] || translations['en'];
             } else {
-                localizedLabel = chartHeadEl.textContent.split(' - ')[0] || date;
+                localizedLabel = chartHeadEl.textContent.split(' - ')[0] || role;
             }
             chartHeadEl.innerHTML = localizedLabel +
                 `<span class="date-string" id="${dateStringId}"></span>`;
@@ -102,32 +105,10 @@
         console.log('Creating chart for:', date, 'margin:', margin);
 
         // Fetch chart data
-        let dateStr;
-        if (date === 'today') {
-            dateStr = 'today';
-        } else if (date === 'tomorrow') {
-            dateStr = 'tomorrow';
-        } else {
-            dateStr = date;
-        }
-
-        fetch(`/api/chart-data?date_str=${dateStr}&margin=${margin}`)
+        fetch(`/api/chart-data?date_str=${encodeURIComponent(date)}&margin=${margin}`)
             .then(response => response.json())
             .then(data => {
                 console.log('Chart data received for', date, ':', data);
-
-                // Track metadata
-                const fetchTime = Date.now();
-                const fetchDate = new Date(fetchTime);
-                if (window.chartDataTimestamps) {
-                    window.chartDataTimestamps[date] = fetchTime;
-                }
-                if (window.chartDataMetadata) {
-                    window.chartDataMetadata[date] = {
-                        fetchedDate: fetchDate.toDateString(),
-                        fetchedHour: fetchDate.getHours()
-                    };
-                }
 
                 // Update date string with localized format
                 const currentDateStringEl = document.getElementById(dateStringId);
@@ -173,6 +154,28 @@
 
                 // Validate data
                 const validData = data.data.filter(row => Array.isArray(row) && row.length === 5);
+
+                // Track metadata
+                const fetchTime = Date.now();
+                const fetchDate = new Date(fetchTime);
+                if (window.chartDataTimestamps) {
+                    window.chartDataTimestamps[role] = fetchTime;
+                }
+                if (window.chartDataMetadata) {
+                    const intervalCountValue = typeof data.intervalCount === 'number'
+                        ? data.intervalCount
+                        : validData.length;
+                    const expectedIntervalCountValue = typeof data.expectedIntervalCount === 'number'
+                        ? data.expectedIntervalCount
+                        : 96;
+                    window.chartDataMetadata[role] = {
+                        fetchedDate: fetchDate.toDateString(),
+                        fetchedHour: fetchDate.getHours(),
+                        intervalCount: intervalCountValue,
+                        expectedIntervalCount: expectedIntervalCountValue
+                    };
+                }
+
                 if (validData.length === 0) {
                     chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">No data available</div>';
                     return;
@@ -191,17 +194,11 @@
                     labels.push(timeStr);
 
                     // Format time for tooltip
-                    let timeFormatted;
-                    if (data.granularity === 'quarter_hour') {
-                        const intervalIndex = parseInt(timeStr);
-                        const hour = Math.floor(intervalIndex / 4);
-                        const quarter = intervalIndex % 4;
-                        const minute = quarter * 15;
-                        timeFormatted = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-                    } else {
-                        const hour = parseInt(timeStr);
-                        timeFormatted = `${hour.toString().padStart(2, '0')}:00`;
-                    }
+                    const intervalIndex = parseInt(timeStr);
+                    const hour = Math.floor(intervalIndex / 4);
+                    const quarter = intervalIndex % 4;
+                    const minute = quarter * 15;
+                    const timeFormatted = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
 
                     const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
                     const totalPrice = spotPrice + (marginPrice || 0);
@@ -247,7 +244,7 @@
                 const annotations = {};
 
                 // Add hourly vertical lines
-                const hourStep = data.granularity === 'quarter_hour' ? 4 : 1;
+                const hourStep = 4;
                 for (let hour = 0; hour < 24; hour++) {
                     const dataPointIndex = hour * hourStep;
                     if (dataPointIndex < validData.length) {
@@ -284,19 +281,13 @@
                 }
 
                 // Add now line for today's chart
-                if (date === 'today') {
+                if (role === 'today') {
                     const now = new Date();
                     const currentHour = now.getHours();
                     const currentMinutes = now.getMinutes();
-                    let dataPointIndex = -1;
-
-                    if (data.granularity === 'quarter_hour') {
-                        const quarter = Math.floor(currentMinutes / 15);
-                        const intervalIndex = currentHour * 4 + quarter;
-                        dataPointIndex = validData.findIndex(row => row[0] === intervalIndex.toString());
-                    } else {
-                        dataPointIndex = validData.findIndex(row => row[0] === currentHour.toString());
-                    }
+                    const quarter = Math.floor(currentMinutes / 15);
+                    const intervalIndex = currentHour * 4 + quarter;
+                    const dataPointIndex = validData.findIndex(row => row[0] === intervalIndex.toString());
 
                     if (dataPointIndex >= 0) {
                         annotations['nowline'] = {
@@ -369,16 +360,11 @@
                                     title: function (context) {
                                         const index = context[0].dataIndex;
                                         const timeStr = labels[index];
-                                        if (data.granularity === 'quarter_hour') {
-                                            const intervalIndex = parseInt(timeStr);
-                                            const hour = Math.floor(intervalIndex / 4);
-                                            const quarter = intervalIndex % 4;
-                                            const minute = quarter * 15;
-                                            return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-                                        } else {
-                                            const hour = parseInt(timeStr);
-                                            return `${hour.toString().padStart(2, '0')}:00`;
-                                        }
+                                        const intervalIndex = parseInt(timeStr);
+                                        const hour = Math.floor(intervalIndex / 4);
+                                        const quarter = intervalIndex % 4;
+                                        const minute = quarter * 15;
+                                        return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
                                     },
                                     label: function (context) {
                                         const datasetLabel = context.dataset.label || '';
@@ -410,19 +396,15 @@
                                 barPercentage: (isMobile || isTablet) ? 0.95 : 0.90,
                                 categoryPercentage: 1.0,
                                 ticks: {
-                                    color: data.granularity === 'quarter_hour' ? 'transparent' : 'white',
+                                    color: 'transparent',
                                     font: {
                                         size: isMobile ? 10 : (isTablet ? 14 : 12)
                                     },
                                     callback: function (value, index) {
-                                        // For quarter-hour, show only hours (0-23) at every 4th position
-                                        if (data.granularity === 'quarter_hour') {
-                                            if (index % 4 === 0) {
-                                                return Math.floor(index / 4).toString();
-                                            }
-                                            return '';
+                                        if (index % 4 === 0) {
+                                            return Math.floor(index / 4).toString();
                                         }
-                                        return value.toString();
+                                        return '';
                                     },
                                     maxRotation: 0,
                                     minRotation: 0
@@ -468,7 +450,7 @@
                                 const index = element.index;
 
                                 // Get tooltip element or create one - use unique ID per chart
-                                const tooltipId = 'chartjs-tooltip-click-' + date;
+                                const tooltipId = 'chartjs-tooltip-click-' + role;
                                 let tooltipEl = document.getElementById(tooltipId);
                                 if (!tooltipEl) {
                                     tooltipEl = document.createElement('div');
@@ -487,17 +469,11 @@
                                 const totalPrice = spotPrice + (marginPrice || 0);
 
                                 // Format time
-                                let timeFormatted;
-                                if (data.granularity === 'quarter_hour') {
-                                    const intervalIndex = parseInt(timeStr);
-                                    const hour = Math.floor(intervalIndex / 4);
-                                    const quarter = intervalIndex % 4;
-                                    const minute = quarter * 15;
-                                    timeFormatted = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-                                } else {
-                                    const hour = parseInt(timeStr);
-                                    timeFormatted = `${hour.toString().padStart(2, '0')}:00`;
-                                }
+                                const intervalIndex = parseInt(timeStr);
+                                const hour = Math.floor(intervalIndex / 4);
+                                const quarter = intervalIndex % 4;
+                                const minute = quarter * 15;
+                                const timeFormatted = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
 
                                 // Build tooltip HTML
                                 let tooltipHTML = `<div style="font-weight: bold; margin-bottom: 4px; color: #333;">${timeFormatted}</div>`;
@@ -576,64 +552,56 @@
                     console.log('Annotation plugin loaded, annotations:', chart.options.plugins.annotation.annotations);
                 }
 
-                // Add custom hour labels for quarter-hour data
-                if (data.granularity === 'quarter_hour') {
-                    chart.canvas.parentElement.style.position = 'relative';
-                    const labelContainer = document.createElement('div');
-                    labelContainer.style.cssText = 'position: absolute; bottom: 0; left: 0; right: 0; height: 30px; pointer-events: none;';
-                    labelContainer.className = 'chart-hour-labels';
-                    chart.canvas.parentElement.appendChild(labelContainer);
+                chart.canvas.parentElement.style.position = 'relative';
+                const labelContainer = document.createElement('div');
+                labelContainer.style.cssText = 'position: absolute; bottom: 0; left: 0; right: 0; height: 30px; pointer-events: none;';
+                labelContainer.className = 'chart-hour-labels';
+                chart.canvas.parentElement.appendChild(labelContainer);
 
-                    function updateHourLabels() {
-                        // Clear existing labels
-                        labelContainer.innerHTML = '';
+                function updateHourLabels() {
+                    labelContainer.innerHTML = '';
 
-                        const chartArea = chart.chartArea;
-                        const scale = chart.scales.x;
-                        if (!chartArea || !scale) {
-                            setTimeout(updateHourLabels, 100);
-                            return;
-                        }
+                    const chartArea = chart.chartArea;
+                    const scale = chart.scales.x;
+                    if (!chartArea || !scale) {
+                        setTimeout(updateHourLabels, 100);
+                        return;
+                    }
 
-                        for (let hour = 0; hour < 24; hour++) {
-                            const dataPointIndex = hour * 4;
-                            if (dataPointIndex < labels.length) {
-                                try {
-                                    // Get the left edge of the first bar in the hour group
-                                    const xPos = scale.getPixelForValue(dataPointIndex);
-                                    // Adjust for bar width to get left edge (barPercentage affects this)
-                                    const barPercentage = (isMobile || isTablet) ? 0.95 : 0.90;
-                                    const categoryWidth = scale.width / labels.length;
-                                    const barWidth = categoryWidth * barPercentage;
-                                    const leftEdge = xPos - (barWidth / 2);
+                    for (let hour = 0; hour < 24; hour++) {
+                        const dataPointIndex = hour * 4;
+                        if (dataPointIndex < labels.length) {
+                            try {
+                                const xPos = scale.getPixelForValue(dataPointIndex);
+                                const barPercentage = (isMobile || isTablet) ? 0.95 : 0.90;
+                                const categoryWidth = scale.width / labels.length;
+                                const barWidth = categoryWidth * barPercentage;
+                                const leftEdge = xPos - (barWidth / 2);
 
-                                    const label = document.createElement('div');
-                                    label.textContent = hour.toString();
-                                    label.style.cssText = `position: absolute; left: ${leftEdge}px; bottom: 5px; color: white; font-size: ${isMobile ? '12px' : '12px'}; font-family: Arial, sans-serif; pointer-events: none; white-space: nowrap;`;
-                                    labelContainer.appendChild(label);
-                                } catch (e) {
-                                    console.warn('Error positioning hour label:', e);
-                                }
+                                const label = document.createElement('div');
+                                label.textContent = hour.toString();
+                                label.style.cssText = `position: absolute; left: ${leftEdge}px; bottom: 5px; color: white; font-size: ${isMobile ? '12px' : '12px'}; font-family: Arial, sans-serif; pointer-events: none; white-space: nowrap;`;
+                                labelContainer.appendChild(label);
+                            } catch (e) {
+                                console.warn('Error positioning hour label:', e);
                             }
                         }
                     }
-
-                    // Update labels after chart is drawn
-                    chart.update();
-                    setTimeout(updateHourLabels, 100);
-
-                    // Update labels on resize
-                    const originalResize = chart.resize;
-                    chart.resize = function () {
-                        originalResize.call(this);
-                        setTimeout(updateHourLabels, 100);
-                    };
                 }
+
+                chart.update();
+                setTimeout(updateHourLabels, 100);
+
+                const originalResize = chart.resize;
+                chart.resize = function () {
+                    originalResize.call(this);
+                    setTimeout(updateHourLabels, 100);
+                };
 
                 // Store chart instance and metadata
                 chartElement._chartInstance = chart;
                 chartElement._validData = validData;
-                chartElement._granularity = data.granularity;
+                chartElement._granularity = data.granularity || 'quarter_hour';
                 chartElement._originalPriceRange = {
                     minPrice: minPrice,
                     maxPrice: maxPrice
@@ -641,8 +609,8 @@
                 chartElement._tooltips = tooltips;
 
                 // Set up now line timer for today's chart
-                if (date === 'today') {
-                    startNowLineTimer(chart, chartElement, validData, data.granularity);
+                if (role === 'today') {
+                    startNowLineTimer(chart, chartElement, validData, chartElement._granularity);
                     if (window.updateCurrentPrice) {
                         window.updateCurrentPrice();
                     }
@@ -765,12 +733,12 @@
 
     // Execute chart creation
     if (typeof Chart !== 'undefined') {
-        window.createChart('{{ chart_date }}');
+        window.createChart('{{ chart_date }}', '{{ chart_role }}');
     } else {
         const checkChart = setInterval(() => {
             if (typeof Chart !== 'undefined') {
                 clearInterval(checkChart);
-                window.createChart('{{ chart_date }}');
+                window.createChart('{{ chart_date }}', '{{ chart_role }}');
             }
         }, 100);
     }
