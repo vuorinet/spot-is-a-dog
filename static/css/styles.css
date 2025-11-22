@@ -47,10 +47,12 @@ body {
     flex: 1;
 }
 
+.header-left h1 .header-icon,
 .header-left .header-icon {
-    height: 3em;
-    width: auto;
+    height: 4em !important;
+    width: auto !important;
     margin-right: 8px;
+    margin-bottom: 30px;
     filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.4))
         drop-shadow(0 0 16px rgba(255, 255, 255, 0.3));
 }
