@@ -256,7 +256,7 @@ def create_app() -> FastAPI:
             try:
                 # Send initial version
                 ver = os.environ.get("SPOT_VERSION", "dev")
-                yield f'data: {{"type": "version", "version": "{ver}"}}\n\n'
+                yield f'event: version_update\ndata: {{"type": "version", "version": "{ver}"}}\n\n'
 
                 while True:
                     try:
@@ -265,11 +265,14 @@ def create_app() -> FastAPI:
                             event_queue.get(),
                             timeout=30.0,
                         )
-                        yield f"data: {json.dumps(event_data)}\n\n"
+                        # Extract event type from event_data
+                        event_type = event_data.get("type", "message")
+                        # Send with proper SSE event name
+                        yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
                     except TimeoutError:
                         # Send periodic version updates
                         ver = os.environ.get("SPOT_VERSION", "dev")
-                        yield f'data: {{"type": "version", "version": "{ver}"}}\n\n'
+                        yield f'event: version_update\ndata: {{"type": "version", "version": "{ver}"}}\n\n'
             finally:
                 # Clean up callback when connection closes
                 if on_cache_event in cache_event_callbacks:
