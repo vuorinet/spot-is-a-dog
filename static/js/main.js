@@ -269,19 +269,28 @@
     };
 
     /**
-     * Redraw existing charts (for window resize)
+     * Redraw existing charts (for window resize or screen re-enablement)
      */
     window.redrawCharts = function () {
-        const todayCanvas = d.querySelector('#todayChart canvas');
-        const tomorrowCanvas = d.querySelector('#tomorrowChart canvas');
+        // Use requestAnimationFrame to ensure DOM is ready
+        requestAnimationFrame(() => {
+            const todayCanvas = d.querySelector('#todayChart canvas');
+            const tomorrowCanvas = d.querySelector('#tomorrowChart canvas');
 
-        if (todayCanvas && todayCanvas._chartInstance) {
-            todayCanvas._chartInstance.resize();
-        }
+            if (todayCanvas && todayCanvas._chartInstance) {
+                // Force Chart.js to recalculate size
+                todayCanvas._chartInstance.resize();
+                // Update without animation to refresh display
+                todayCanvas._chartInstance.update('none');
+            }
 
-        if (tomorrowCanvas && tomorrowCanvas._chartInstance) {
-            tomorrowCanvas._chartInstance.resize();
-        }
+            if (tomorrowCanvas && tomorrowCanvas._chartInstance) {
+                // Force Chart.js to recalculate size
+                tomorrowCanvas._chartInstance.resize();
+                // Update without animation to refresh display
+                tomorrowCanvas._chartInstance.update('none');
+            }
+        });
     };
 
     // ============================================================================
@@ -423,6 +432,48 @@
                 window.redrawCharts();
             }
         }, 300);
+    });
+
+    // ============================================================================
+    // VISIBILITY CHANGE HANDLER (for screen re-enablement)
+    // ============================================================================
+
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            // Screen was re-enabled, force chart resize
+            console.log('Screen re-enabled, resizing charts...');
+            setTimeout(() => {
+                if (window.redrawCharts) {
+                    window.redrawCharts();
+                }
+            }, 100); // Small delay to ensure DOM is ready
+        }
+    });
+
+    // Handle page show event (when page is restored from back/forward cache or screen re-enabled)
+    window.addEventListener('pageshow', (event) => {
+        if (event.persisted) {
+            // Page was restored from cache
+            console.log('Page restored from cache, resizing charts...');
+        } else {
+            // Page was shown normally
+            console.log('Page shown, resizing charts...');
+        }
+        setTimeout(() => {
+            if (window.redrawCharts) {
+                window.redrawCharts();
+            }
+        }, 100);
+    });
+
+    // Handle window focus (when screen is re-enabled, window regains focus)
+    window.addEventListener('focus', () => {
+        console.log('Window regained focus, resizing charts...');
+        setTimeout(() => {
+            if (window.redrawCharts) {
+                window.redrawCharts();
+            }
+        }, 100);
     });
 
     // ============================================================================

@@ -101,6 +101,12 @@
         if (chartElement._pageHideHandler) {
             window.removeEventListener('pagehide', chartElement._pageHideHandler);
         }
+        if (chartElement._visibilityResizeHandler) {
+            document.removeEventListener('visibilitychange', chartElement._visibilityResizeHandler);
+        }
+        if (chartElement._focusResizeHandler) {
+            window.removeEventListener('focus', chartElement._focusResizeHandler);
+        }
 
         console.log('Creating chart for:', date, 'margin:', margin);
 
@@ -618,14 +624,51 @@
 
                 // Handle window resize
                 let resizeTimer;
-                window.addEventListener('resize', () => {
+                const resizeHandler = () => {
                     clearTimeout(resizeTimer);
                     resizeTimer = setTimeout(() => {
                         if (chartElement._chartInstance) {
                             chartElement._chartInstance.resize();
                         }
                     }, 250);
-                });
+                };
+                window.addEventListener('resize', resizeHandler);
+
+                // Handle visibility change (screen re-enablement)
+                const visibilityResizeHandler = () => {
+                    if (!document.hidden && chartElement._chartInstance) {
+                        // Screen was re-enabled, force resize after DOM is ready
+                        // Use requestAnimationFrame to ensure layout is complete
+                        requestAnimationFrame(() => {
+                            setTimeout(() => {
+                                if (chartElement._chartInstance) {
+                                    const chart = chartElement._chartInstance;
+                                    // Force Chart.js to recalculate canvas size
+                                    chart.resize();
+                                    // Update without animation to refresh display
+                                    chart.update('none');
+                                }
+                            }, 100);
+                        });
+                    }
+                };
+                document.addEventListener('visibilitychange', visibilityResizeHandler);
+                chartElement._visibilityResizeHandler = visibilityResizeHandler;
+
+                // Handle window focus (screen re-enablement)
+                const focusResizeHandler = () => {
+                    requestAnimationFrame(() => {
+                        setTimeout(() => {
+                            if (chartElement._chartInstance) {
+                                const chart = chartElement._chartInstance;
+                                chart.resize();
+                                chart.update('none');
+                            }
+                        }, 100);
+                    });
+                };
+                window.addEventListener('focus', focusResizeHandler);
+                chartElement._focusResizeHandler = focusResizeHandler;
 
                 console.log('Chart created successfully');
             })
