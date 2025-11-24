@@ -216,6 +216,11 @@ body {
         flex: 1 1 100%;
         width: 100%;
     }
+    .header-left h1 .header-icon,
+    .header-left .header-icon {
+        height: 2em !important; /* 50% of base 4em size */
+        margin-bottom: 15px; /* Reduced margin to match smaller size */
+    }
     .header-left h1 {
         font-size: 18px;
         flex: 0 0 auto;
@@ -292,6 +297,11 @@ body {
         gap: 16px;
         flex: 1;
         min-width: 0;
+    }
+    .header-left h1 .header-icon,
+    .header-left .header-icon {
+        height: 2em !important; /* 50% of base 4em size */
+        margin-bottom: 15px; /* Reduced margin to match smaller size */
     }
     .header-left h1 {
         font-size: 18px;

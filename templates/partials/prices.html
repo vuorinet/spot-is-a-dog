@@ -78,34 +78,87 @@
                 `<span class="date-string" id="${dateStringId}"></span>`;
         }
 
-        // Check if chart already exists and destroy it
+        // Check if chart already exists and destroy it using registry
         if (chartElement._chartInstance) {
-            chartElement._chartInstance.destroy();
+            if (window.chartRegistry) {
+                window.chartRegistry.unregisterChart(chartElement);
+            } else {
+                try {
+                    chartElement._chartInstance.destroy();
+                } catch (e) {
+                    console.warn('Error destroying chart:', e);
+                }
+            }
             chartElement._chartInstance = null;
         }
 
-        // Clean up timers
+        // Clean up timers using registry
         if (chartElement._nowLineTimer) {
-            clearInterval(chartElement._nowLineTimer);
-            clearTimeout(chartElement._nowLineTimer);
+            if (window.chartRegistry) {
+                window.chartRegistry.clearTimer(chartElement._nowLineTimer);
+            } else {
+                clearInterval(chartElement._nowLineTimer);
+                clearTimeout(chartElement._nowLineTimer);
+            }
+            chartElement._nowLineTimer = null;
         }
+
+        // Clean up event listeners using registry
         if (chartElement._visibilityHandler) {
-            document.removeEventListener('visibilitychange', chartElement._visibilityHandler);
+            if (window.chartRegistry) {
+                window.chartRegistry.removeEventListeners(document);
+            } else {
+                document.removeEventListener('visibilitychange', chartElement._visibilityHandler);
+            }
+            chartElement._visibilityHandler = null;
         }
         if (chartElement._focusHandler) {
-            window.removeEventListener('focus', chartElement._focusHandler);
+            if (window.chartRegistry) {
+                window.chartRegistry.removeEventListeners(window);
+            } else {
+                window.removeEventListener('focus', chartElement._focusHandler);
+            }
+            chartElement._focusHandler = null;
         }
         if (chartElement._pageShowHandler) {
-            window.removeEventListener('pageshow', chartElement._pageShowHandler);
+            if (window.chartRegistry) {
+                window.chartRegistry.removeEventListeners(window);
+            } else {
+                window.removeEventListener('pageshow', chartElement._pageShowHandler);
+            }
+            chartElement._pageShowHandler = null;
         }
         if (chartElement._pageHideHandler) {
-            window.removeEventListener('pagehide', chartElement._pageHideHandler);
+            if (window.chartRegistry) {
+                window.chartRegistry.removeEventListeners(window);
+            } else {
+                window.removeEventListener('pagehide', chartElement._pageHideHandler);
+            }
+            chartElement._pageHideHandler = null;
         }
         if (chartElement._visibilityResizeHandler) {
-            document.removeEventListener('visibilitychange', chartElement._visibilityResizeHandler);
+            if (window.chartRegistry) {
+                window.chartRegistry.removeEventListeners(document);
+            } else {
+                document.removeEventListener('visibilitychange', chartElement._visibilityResizeHandler);
+            }
+            chartElement._visibilityResizeHandler = null;
         }
         if (chartElement._focusResizeHandler) {
-            window.removeEventListener('focus', chartElement._focusResizeHandler);
+            if (window.chartRegistry) {
+                window.chartRegistry.removeEventListeners(window);
+            } else {
+                window.removeEventListener('focus', chartElement._focusResizeHandler);
+            }
+            chartElement._focusResizeHandler = null;
+        }
+        if (chartElement._resizeHandler) {
+            if (window.chartRegistry) {
+                window.chartRegistry.removeEventListeners(window);
+            } else {
+                window.removeEventListener('resize', chartElement._resizeHandler);
+            }
+            chartElement._resizeHandler = null;
         }
 
         console.log('Creating chart for:', date, 'margin:', margin);
@@ -158,8 +211,47 @@
                     currentDateStringEl.textContent = ` - ${formattedDate}`;
                 }
 
-                // Validate data
-                const validData = data.data.filter(row => Array.isArray(row) && row.length === 5);
+                // Validate data with comprehensive integrity checks
+                if (!data || typeof data !== 'object') {
+                    console.error('Invalid chart data: data is not an object');
+                    chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">Error: Invalid data format</div>';
+                    return;
+                }
+
+                if (!Array.isArray(data.data)) {
+                    console.error('Invalid chart data: data.data is not an array');
+                    chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">Error: Invalid data format</div>';
+                    return;
+                }
+
+                // Use validation function if available, otherwise use basic filter
+                let validationResult = null;
+                if (typeof window.validateChartData === 'function') {
+                    validationResult = window.validateChartData(data.data, role);
+                    if (!validationResult.isValid) {
+                        console.error('Chart data validation failed:', validationResult.errors);
+                        // Still try to use valid rows if we have enough
+                        if (validationResult.validRows < Math.ceil(data.data.length * 0.5)) {
+                            chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">Error: Insufficient valid data</div>';
+                            return;
+                        }
+                    }
+                }
+
+                // Filter valid data rows
+                const validData = data.data.filter(row => {
+                    if (!Array.isArray(row)) return false;
+                    if (row.length !== 5) return false;
+                    // Additional validation: check that timeStr is valid
+                    const [timeStr] = row;
+                    if (timeStr === null || timeStr === undefined) return false;
+                    // Check that at least some prices are numbers
+                    const [, lowPrice, mediumPrice, highPrice, marginPrice] = row;
+                    const hasValidPrice = [lowPrice, mediumPrice, highPrice, marginPrice].some(
+                        price => typeof price === 'number' && !isNaN(price) && isFinite(price)
+                    );
+                    return hasValidPrice;
+                });
 
                 // Track metadata
                 const fetchTime = Date.now();
@@ -183,8 +275,15 @@
                 }
 
                 if (validData.length === 0) {
-                    chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">No data available</div>';
+                    console.error('No valid data rows after filtering');
+                    chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">No valid data available</div>';
                     return;
+                }
+
+                // Additional validation: check data integrity
+                const expectedIntervals = data.expectedIntervalCount || 96;
+                if (validData.length < expectedIntervals * 0.5) {
+                    console.warn(`Warning: Only ${validData.length} valid data points, expected at least ${Math.ceil(expectedIntervals * 0.5)}`);
                 }
 
                 // Process data for Chart.js
@@ -548,14 +647,32 @@
                     sample: annotations[annotationKeys[0]]
                 });
 
+                // Validate chart element is still in DOM before creating chart
+                if (!document.body.contains(chartElement)) {
+                    console.error('Chart element no longer in DOM, aborting chart creation');
+                    return;
+                }
+
                 // Create chart
-                const chart = new Chart(chartElement, chartConfig);
+                let chart;
+                try {
+                    chart = new Chart(chartElement, chartConfig);
+                } catch (e) {
+                    console.error('Error creating chart:', e);
+                    chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">Error creating chart</div>';
+                    return;
+                }
 
                 // Verify annotation plugin is loaded
                 if (!chart.options.plugins.annotation) {
                     console.error('Annotation plugin not found!');
                 } else {
                     console.log('Annotation plugin loaded, annotations:', chart.options.plugins.annotation.annotations);
+                }
+
+                // Register chart instance with global registry
+                if (window.chartRegistry) {
+                    window.chartRegistry.registerChart(chartElement, chart);
                 }
 
                 chart.canvas.parentElement.style.position = 'relative';
@@ -623,51 +740,80 @@
                 }
 
                 // Handle window resize
-                let resizeTimer;
+                let resizeTimer = null;
                 const resizeHandler = () => {
-                    clearTimeout(resizeTimer);
+                    if (resizeTimer) {
+                        clearTimeout(resizeTimer);
+                    }
                     resizeTimer = setTimeout(() => {
-                        if (chartElement._chartInstance) {
-                            chartElement._chartInstance.resize();
+                        if (chartElement._chartInstance && document.body.contains(chartElement)) {
+                            try {
+                                chartElement._chartInstance.resize();
+                            } catch (e) {
+                                console.warn('Error resizing chart:', e);
+                            }
                         }
+                        resizeTimer = null;
                     }, 250);
                 };
-                window.addEventListener('resize', resizeHandler);
+                if (window.chartRegistry) {
+                    window.chartRegistry.trackEventListener(window, 'resize', resizeHandler);
+                } else {
+                    window.addEventListener('resize', resizeHandler);
+                }
+                chartElement._resizeHandler = resizeHandler;
 
                 // Handle visibility change (screen re-enablement)
                 const visibilityResizeHandler = () => {
-                    if (!document.hidden && chartElement._chartInstance) {
+                    if (!document.hidden && chartElement._chartInstance && document.body.contains(chartElement)) {
                         // Screen was re-enabled, force resize after DOM is ready
                         // Use requestAnimationFrame to ensure layout is complete
                         requestAnimationFrame(() => {
                             setTimeout(() => {
-                                if (chartElement._chartInstance) {
-                                    const chart = chartElement._chartInstance;
-                                    // Force Chart.js to recalculate canvas size
-                                    chart.resize();
-                                    // Update without animation to refresh display
-                                    chart.update('none');
+                                if (chartElement._chartInstance && document.body.contains(chartElement)) {
+                                    try {
+                                        const chart = chartElement._chartInstance;
+                                        // Force Chart.js to recalculate canvas size
+                                        chart.resize();
+                                        // Update without animation to refresh display
+                                        chart.update('none');
+                                    } catch (e) {
+                                        console.warn('Error handling visibility change:', e);
+                                    }
                                 }
                             }, 100);
                         });
                     }
                 };
-                document.addEventListener('visibilitychange', visibilityResizeHandler);
+                if (window.chartRegistry) {
+                    window.chartRegistry.trackEventListener(document, 'visibilitychange', visibilityResizeHandler);
+                } else {
+                    document.addEventListener('visibilitychange', visibilityResizeHandler);
+                }
                 chartElement._visibilityResizeHandler = visibilityResizeHandler;
 
                 // Handle window focus (screen re-enablement)
                 const focusResizeHandler = () => {
+                    if (!document.body.contains(chartElement)) return;
                     requestAnimationFrame(() => {
                         setTimeout(() => {
-                            if (chartElement._chartInstance) {
-                                const chart = chartElement._chartInstance;
-                                chart.resize();
-                                chart.update('none');
+                            if (chartElement._chartInstance && document.body.contains(chartElement)) {
+                                try {
+                                    const chart = chartElement._chartInstance;
+                                    chart.resize();
+                                    chart.update('none');
+                                } catch (e) {
+                                    console.warn('Error handling focus:', e);
+                                }
                             }
                         }, 100);
                     });
                 };
-                window.addEventListener('focus', focusResizeHandler);
+                if (window.chartRegistry) {
+                    window.chartRegistry.trackEventListener(window, 'focus', focusResizeHandler);
+                } else {
+                    window.addEventListener('focus', focusResizeHandler);
+                }
                 chartElement._focusResizeHandler = focusResizeHandler;
 
                 console.log('Chart created successfully');
@@ -680,13 +826,37 @@
         function startNowLineTimer(chart, chartElement, validData, granularity) {
             // Clear existing timer
             if (chartElement._nowLineTimer) {
-                clearInterval(chartElement._nowLineTimer);
-                clearTimeout(chartElement._nowLineTimer);
+                if (window.chartRegistry) {
+                    window.chartRegistry.clearTimer(chartElement._nowLineTimer);
+                } else {
+                    clearInterval(chartElement._nowLineTimer);
+                    clearTimeout(chartElement._nowLineTimer);
+                }
+                chartElement._nowLineTimer = null;
             }
 
             function updateNowLine() {
                 if (document.hidden) return;
                 if (!chartElement._chartInstance) return;
+                if (!document.body.contains(chartElement)) return;
+
+                // Validate chart instance is still valid
+                try {
+                    if (!chartElement._chartInstance.canvas || !chartElement._chartInstance.options) return;
+                    if (!chartElement._chartInstance.options.plugins || !chartElement._chartInstance.options.plugins.annotation) return;
+                } catch (e) {
+                    console.warn('Chart instance invalid, stopping now line timer:', e);
+                    if (chartElement._nowLineTimer) {
+                        if (window.chartRegistry) {
+                            window.chartRegistry.clearTimer(chartElement._nowLineTimer);
+                        } else {
+                            clearInterval(chartElement._nowLineTimer);
+                            clearTimeout(chartElement._nowLineTimer);
+                        }
+                        chartElement._nowLineTimer = null;
+                    }
+                    return;
+                }
 
                 const now = new Date();
                 const currentHour = now.getHours();
@@ -702,26 +872,30 @@
                 }
 
                 if (dataPointIndex >= 0) {
-                    const annotations = chartElement._chartInstance.options.plugins.annotation.annotations;
-                    // Remove existing now line
-                    if (annotations.nowline) {
-                        delete annotations.nowline;
+                    try {
+                        const annotations = chartElement._chartInstance.options.plugins.annotation.annotations;
+                        // Remove existing now line
+                        if (annotations.nowline) {
+                            delete annotations.nowline;
+                        }
+                        // Add new now line
+                        annotations.nowline = {
+                            type: 'line',
+                            xMin: dataPointIndex,
+                            xMax: dataPointIndex,
+                            yMin: chartElement._originalPriceRange.minPrice,
+                            yMax: chartElement._originalPriceRange.maxPrice,
+                            borderColor: 'rgba(255, 153, 0, 0.9)',
+                            borderWidth: 3,
+                            borderDash: [4, 3],
+                            drawTime: 'afterDatasetsDraw',
+                            xScaleID: 'x',
+                            yScaleID: 'y'
+                        };
+                        chartElement._chartInstance.update('none');
+                    } catch (e) {
+                        console.warn('Error updating now line:', e);
                     }
-                    // Add new now line
-                    annotations.nowline = {
-                        type: 'line',
-                        xMin: dataPointIndex,
-                        xMax: dataPointIndex,
-                        yMin: chartElement._originalPriceRange.minPrice,
-                        yMax: chartElement._originalPriceRange.maxPrice,
-                        borderColor: 'rgba(255, 153, 0, 0.9)',
-                        borderWidth: 3,
-                        borderDash: [4, 3],
-                        drawTime: 'afterDatasetsDraw',
-                        xScaleID: 'x',
-                        yScaleID: 'y'
-                    };
-                    chartElement._chartInstance.update('none');
                 }
             }
 
@@ -738,39 +912,66 @@
 
             function scheduleNext() {
                 const ms = msUntilNext15Min();
-                chartElement._nowLineTimer = setTimeout(() => {
+                const timeoutId = setTimeout(() => {
                     updateNowLine();
-                    chartElement._nowLineTimer = setInterval(updateNowLine, 15 * 60 * 1000);
+                    const intervalId = setInterval(updateNowLine, 15 * 60 * 1000);
+                    if (window.chartRegistry) {
+                        window.chartRegistry.trackTimer(intervalId);
+                    }
+                    chartElement._nowLineTimer = intervalId;
                 }, ms);
+                if (window.chartRegistry) {
+                    window.chartRegistry.trackTimer(timeoutId);
+                }
+                chartElement._nowLineTimer = timeoutId;
             }
 
             scheduleNext();
 
             const visibilityHandler = () => {
-                if (!document.hidden) {
+                if (!document.hidden && document.body.contains(chartElement)) {
                     updateNowLine();
                     if (chartElement._nowLineTimer) {
-                        clearInterval(chartElement._nowLineTimer);
-                        clearTimeout(chartElement._nowLineTimer);
+                        if (window.chartRegistry) {
+                            window.chartRegistry.clearTimer(chartElement._nowLineTimer);
+                        } else {
+                            clearInterval(chartElement._nowLineTimer);
+                            clearTimeout(chartElement._nowLineTimer);
+                        }
+                        chartElement._nowLineTimer = null;
                     }
                     scheduleNext();
                 }
             };
 
             chartElement._visibilityHandler = visibilityHandler;
-            document.addEventListener('visibilitychange', visibilityHandler);
+            if (window.chartRegistry) {
+                window.chartRegistry.trackEventListener(document, 'visibilitychange', visibilityHandler);
+            } else {
+                document.addEventListener('visibilitychange', visibilityHandler);
+            }
 
             const focusHandler = () => {
+                if (!document.body.contains(chartElement)) return;
                 updateNowLine();
                 if (chartElement._nowLineTimer) {
-                    clearInterval(chartElement._nowLineTimer);
-                    clearTimeout(chartElement._nowLineTimer);
+                    if (window.chartRegistry) {
+                        window.chartRegistry.clearTimer(chartElement._nowLineTimer);
+                    } else {
+                        clearInterval(chartElement._nowLineTimer);
+                        clearTimeout(chartElement._nowLineTimer);
+                    }
+                    chartElement._nowLineTimer = null;
                 }
                 scheduleNext();
             };
 
             chartElement._focusHandler = focusHandler;
-            window.addEventListener('focus', focusHandler);
+            if (window.chartRegistry) {
+                window.chartRegistry.trackEventListener(window, 'focus', focusHandler);
+            } else {
+                window.addEventListener('focus', focusHandler);
+            }
         }
     };
 
