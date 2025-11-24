@@ -1,13 +1,16 @@
 version: "3.9"
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # Automatically use git SHA as version, or override with SPOT_VERSION env var
+        SPOT_VERSION: ${SPOT_VERSION:-}
     image: spot:latest
     restart: unless-stopped
     environment:
       ENTSOE_API_TOKEN: ${ENTSOE_API_TOKEN}
       TZ: Europe/Helsinki
       DEFAULT_MARGIN_CENTS_PER_KWH: ${DEFAULT_MARGIN_CENTS_PER_KWH:-0}
-      SPOT_VERSION: ${SPOT_VERSION:-dev}
     ports:
       - "8000:8000"

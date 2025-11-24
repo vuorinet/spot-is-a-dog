@@ -693,9 +693,11 @@
     function setupSSE() {
         // Close existing connection if any
         if (sseEventSource) {
+            console.log('Closing existing SSE connection');
             window.chartRegistry.closeSSE(sseEventSource);
         }
 
+        console.log('Establishing SSE connection to /events/version');
         sseEventSource = new EventSource('/events/version');
         window.chartRegistry.trackSSE(sseEventSource);
 
@@ -727,8 +729,9 @@
             try {
                 const data = JSON.parse(event.data);
                 const currentVersion = d.body.getAttribute('data-app-version');
+                console.log('Version update received:', data.version, '(current:', currentVersion + ')');
                 if (data.version && data.version !== currentVersion) {
-                    console.log('New version available:', data.version);
+                    console.log('New version available:', data.version, '- showing reload toast');
                     showUpdateToast();
                 }
             } catch (e) {
@@ -736,10 +739,15 @@
             }
         };
 
-        const errorHandler = function () {
-            console.log('SSE connection error, will reconnect automatically');
+        const openHandler = function () {
+            console.log('SSE connection opened successfully');
         };
 
+        const errorHandler = function (event) {
+            console.log('SSE connection error, readyState:', sseEventSource.readyState, 'event:', event);
+        };
+
+        sseEventSource.onopen = openHandler;
         sseEventSource.addEventListener('day_updated', dayUpdatedHandler);
         sseEventSource.addEventListener('version_update', versionUpdateHandler);
         sseEventSource.onerror = errorHandler;

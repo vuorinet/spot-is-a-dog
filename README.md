@@ -59,15 +59,35 @@ Prerequisites:
 ```env
 ENTSOE_API_TOKEN=<your_entsoe_token>
 DEFAULT_MARGIN_CENTS_PER_KWH=0
-SPOT_VERSION=dev
 LOG_LEVEL=INFO
 # Optional override if DNS issues occur
 # ENTSOE_BASE_URL=https://web-api.tp.entsoe.eu/api
 ```
 
-2. Build and start:
+**Note:** `SPOT_VERSION` is no longer needed in `.env` - it's automatically set from git SHA during build!
+
+2. Build and deploy with automatic versioning:
 
 ```bash
+./deploy.sh
+```
+
+This script automatically:
+- Uses git SHA as version (ensures automatic reload on new deployments)
+- Builds the Docker image with the version baked in
+- Starts/restarts the application
+
+Alternatively, manual build and start:
+
+```bash
+# Option 1: Build with automatic git SHA versioning
+./build.sh
+docker compose up -d
+
+# Option 2: Manual version override
+SPOT_VERSION=v1.2.3 docker compose up -d --build
+
+# Option 3: Let Docker use git SHA automatically
 docker compose up -d --build
 ```
 
@@ -109,7 +129,35 @@ Starting October 1, 2025, the European Single Day-Ahead Coupling (SDAC) will tra
 -   **Cache Management**: Cache validation logic accounts for different expected interval counts (24 vs 96)
 -   **Simulation Mode**: For testing, the system currently simulates 15-minute data for current dates. This can be disabled by modifying the date condition in `fetch_prices_for_day()`
 
+## Automatic Version Detection & Reload
+
+The application includes automatic reload functionality that notifies browsers when a new version is deployed:
+
+1. **Version is set automatically** from git SHA during Docker build (via `deploy.sh` or `build.sh`)
+2. **Server broadcasts version** to all connected browsers via Server-Sent Events (SSE)
+3. **Browsers detect version change** when a new deployment occurs
+4. **User gets notified** with a reload prompt (auto-reloads after 30 seconds)
+
+This ensures users always run the latest version without manual refresh. The version is visible at:
+- `/version` API endpoint
+- Browser console logs
+- `data-app-version` attribute on page body
+
+### For Production with Reverse Proxy
+
+If running behind Nginx or another reverse proxy, ensure SSE streams are not buffered:
+
+```nginx
+location / {
+    proxy_pass http://backend;
+    proxy_http_version 1.1;
+    proxy_set_header Connection '';
+    proxy_buffering off;
+    proxy_cache off;
+    chunked_transfer_encoding off;
+}
+```
+
 ## Notes
 
--   The service runs behind Nginx with TLS in production. For Server-Sent Events (SSE) used by the version auto-reload, ensure your reverse proxy is configured to pass through `text/event-stream` with appropriate buffering disabled.
 -   The backend assumes server time zone `Europe/Helsinki` for scheduling ENTSO-E polling; the UI shows times in the browser's local time zone.

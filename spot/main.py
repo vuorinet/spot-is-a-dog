@@ -252,10 +252,15 @@ def create_app() -> FastAPI:
                 await event_queue.put(event_data)
 
             cache_event_callbacks.append(on_cache_event)
+            logger.info(
+                "New SSE connection established, total clients: %d",
+                len(cache_event_callbacks),
+            )
 
             try:
                 # Send initial version
                 ver = os.environ.get("SPOT_VERSION", "dev")
+                logger.info("Sending initial version to client: %s", ver)
                 yield f'event: version_update\ndata: {{"type": "version", "version": "{ver}"}}\n\n'
 
                 while True:
@@ -272,13 +277,29 @@ def create_app() -> FastAPI:
                     except TimeoutError:
                         # Send periodic version updates
                         ver = os.environ.get("SPOT_VERSION", "dev")
+                        logger.debug(
+                            "Sending periodic version update to client: %s",
+                            ver,
+                        )
                         yield f'event: version_update\ndata: {{"type": "version", "version": "{ver}"}}\n\n'
             finally:
                 # Clean up callback when connection closes
                 if on_cache_event in cache_event_callbacks:
                     cache_event_callbacks.remove(on_cache_event)
+                logger.info(
+                    "SSE connection closed, remaining clients: %d",
+                    len(cache_event_callbacks),
+                )
 
-        return StreamingResponse(eventgen(), media_type="text/event-stream")
+        return StreamingResponse(
+            eventgen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     from .entsoe import DataNotAvailable, fetch_day_ahead_prices
 
