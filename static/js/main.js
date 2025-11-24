@@ -599,11 +599,11 @@
             priceElement.textContent = priceText;
 
             // Set color based on price (green for low, yellow for medium, red for high)
-            // Using a simple threshold: < 5 = green, 5-10 = yellow, > 10 = red
-            if (displayPrice < 5) {
+            // Using same thresholds and colors as backend: < 5.0 = green, 5.0-15.0 = yellow, >= 15.0 = red
+            if (displayPrice < 5.0) {
                 priceElement.style.color = '#2ecc71'; // green
-            } else if (displayPrice < 10) {
-                priceElement.style.color = '#f39c12'; // yellow/orange
+            } else if (displayPrice < 15.0) {
+                priceElement.style.color = '#f1c40f'; // yellow (same as backend bar coloring)
             } else {
                 priceElement.style.color = '#e74c3c'; // red
             }
