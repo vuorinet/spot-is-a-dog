@@ -17,6 +17,131 @@
     const ONE_MINUTE = 60 * 1000;
 
     // ============================================================================
+    // GLOBAL STATE AND DATA MANAGEMENT
+    // ============================================================================
+
+    /**
+     * Global chart data store - single source of truth for chart data
+     * This prevents stale data from being used by timers or closures
+     */
+    window.chartDataStore = {
+        today: {
+            date: null,          // ISO date string (YYYY-MM-DD)
+            data: null,          // Array of [timeStr, low, med, high, margin]
+            fetchedAt: null,     // Timestamp when data was fetched
+            granularity: 'quarter_hour',
+            priceRange: { minPrice: 0, maxPrice: 15 }
+        },
+        tomorrow: {
+            date: null,
+            data: null,
+            fetchedAt: null,
+            granularity: 'quarter_hour',
+            priceRange: { minPrice: 0, maxPrice: 15 }
+        },
+
+        /**
+         * Update chart data for a role
+         */
+        setData: function (role, date, data, granularity, priceRange) {
+            if (!this[role]) return;
+            this[role] = {
+                date: date,
+                data: data,
+                fetchedAt: Date.now(),
+                granularity: granularity || 'quarter_hour',
+                priceRange: priceRange || { minPrice: 0, maxPrice: 15 }
+            };
+            console.log(`Chart data store updated for ${role}: date=${date}, rows=${data ? data.length : 0}`);
+        },
+
+        /**
+         * Get data for a role, with date validation
+         */
+        getData: function (role, expectedDate) {
+            if (!this[role] || !this[role].data) return null;
+            
+            // If expected date is provided, validate
+            if (expectedDate && this[role].date !== expectedDate) {
+                console.warn(`Chart data store: date mismatch for ${role}. Expected ${expectedDate}, got ${this[role].date}`);
+                return null;
+            }
+            
+            return this[role];
+        },
+
+        /**
+         * Check if data is stale (older than 2 hours)
+         */
+        isStale: function (role) {
+            if (!this[role] || !this[role].fetchedAt) return true;
+            const age = Date.now() - this[role].fetchedAt;
+            return age > 2 * 60 * 60 * 1000; // 2 hours
+        },
+
+        /**
+         * Clear data for a role
+         */
+        clear: function (role) {
+            if (this[role]) {
+                this[role] = {
+                    date: null,
+                    data: null,
+                    fetchedAt: null,
+                    granularity: 'quarter_hour',
+                    priceRange: { minPrice: 0, maxPrice: 15 }
+                };
+            }
+        },
+
+        /**
+         * Clear all data
+         */
+        clearAll: function () {
+            this.clear('today');
+            this.clear('tomorrow');
+        }
+    };
+
+    /**
+     * Refresh lock to prevent concurrent refreshes
+     */
+    window.refreshLock = {
+        today: false,
+        tomorrow: false,
+        lastRefresh: {
+            today: 0,
+            tomorrow: 0
+        },
+
+        /**
+         * Acquire lock for a role
+         */
+        acquire: function (role) {
+            if (this[role]) {
+                console.log(`Refresh already in progress for ${role}, skipping`);
+                return false;
+            }
+            // Also prevent rapid refreshes (within 2 seconds)
+            const now = Date.now();
+            if (now - this.lastRefresh[role] < 2000) {
+                console.log(`Refresh for ${role} too soon, skipping`);
+                return false;
+            }
+            this[role] = true;
+            return true;
+        },
+
+        /**
+         * Release lock for a role
+         */
+        release: function (role) {
+            this[role] = false;
+            this.lastRefresh[role] = Date.now();
+        }
+    };
+
+    // ============================================================================
     // GLOBAL CHART REGISTRY AND CLEANUP MANAGEMENT
     // ============================================================================
 
@@ -24,16 +149,16 @@
      * Global chart instance registry for tracking and cleanup
      */
     window.chartRegistry = {
-        instances: new Map(), // Map<canvasElement, chartInstance>
-        timers: new Set(), // Set of all timer IDs
+        instances: new Map(), // Map<canvasElement, {instance, role, date, registeredAt}>
+        timers: new Map(), // Map<timerId, {role, purpose, createdAt}>
         eventListeners: new Map(), // Map<element, Array<{event, handler, options}>>
         sseConnections: new Set(), // Set of EventSource instances
         cleanupCallbacks: new Set(), // Set of cleanup functions
 
         /**
-         * Register a chart instance
+         * Register a chart instance with date metadata
          */
-        registerChart: function (canvasElement, chartInstance) {
+        registerChart: function (canvasElement, chartInstance, role, date) {
             if (!canvasElement || !chartInstance) return;
             // Clean up any existing chart on this canvas
             if (this.instances.has(canvasElement)) {
@@ -41,9 +166,11 @@
             }
             this.instances.set(canvasElement, {
                 instance: chartInstance,
-                role: canvasElement.closest('[data-role]')?.getAttribute('data-role') || 'unknown',
+                role: role || canvasElement.closest('[data-role]')?.getAttribute('data-role') || 'unknown',
+                date: date,
                 registeredAt: Date.now()
             });
+            console.log(`Chart registered: role=${role}, date=${date}`);
         },
 
         /**
@@ -53,6 +180,7 @@
             if (!canvasElement) return;
             const entry = this.instances.get(canvasElement);
             if (entry && entry.instance) {
+                console.log(`Unregistering chart: role=${entry.role}, date=${entry.date}`);
                 try {
                     entry.instance.destroy();
                 } catch (e) {
@@ -63,11 +191,27 @@
         },
 
         /**
-         * Track a timer for cleanup
+         * Get chart info by role
          */
-        trackTimer: function (timerId) {
+        getChartByRole: function (role) {
+            for (const [canvas, entry] of this.instances) {
+                if (entry.role === role && d.body.contains(canvas)) {
+                    return { canvas, ...entry };
+                }
+            }
+            return null;
+        },
+
+        /**
+         * Track a timer for cleanup with metadata
+         */
+        trackTimer: function (timerId, role, purpose) {
             if (timerId) {
-                this.timers.add(timerId);
+                this.timers.set(timerId, {
+                    role: role || 'global',
+                    purpose: purpose || 'unknown',
+                    createdAt: Date.now()
+                });
             }
             return timerId;
         },
@@ -81,6 +225,20 @@
                 clearTimeout(timerId);
                 this.timers.delete(timerId);
             }
+        },
+
+        /**
+         * Clear all timers for a role
+         */
+        clearTimersForRole: function (role) {
+            const toClear = [];
+            this.timers.forEach((meta, timerId) => {
+                if (meta.role === role) {
+                    toClear.push(timerId);
+                }
+            });
+            toClear.forEach(timerId => this.clearTimer(timerId));
+            console.log(`Cleared ${toClear.length} timers for role ${role}`);
         },
 
         /**
@@ -157,7 +315,7 @@
             });
 
             // Clear all timers
-            this.timers.forEach(timerId => {
+            this.timers.forEach((meta, timerId) => {
                 clearInterval(timerId);
                 clearTimeout(timerId);
             });
@@ -173,6 +331,9 @@
                 this.closeSSE(eventSource);
             });
 
+            // Clear data store
+            window.chartDataStore.clearAll();
+
             // Run cleanup callbacks
             this.cleanupCallbacks.forEach(callback => {
                 try {
@@ -187,42 +348,60 @@
         },
 
         /**
-         * Periodic cleanup of orphaned chart instances
+         * Periodic cleanup of orphaned chart instances and stale timers
          */
-        cleanupOrphanedCharts: function () {
-            const orphaned = [];
+        cleanupOrphaned: function () {
+            let cleanedCharts = 0;
+            let cleanedTimers = 0;
+
+            // Clean up orphaned charts
+            const orphanedCharts = [];
             this.instances.forEach((entry, canvasElement) => {
-                // Check if canvas element is still in DOM
                 if (!d.body.contains(canvasElement)) {
-                    orphaned.push(canvasElement);
+                    orphanedCharts.push(canvasElement);
                 } else {
-                    // Validate chart instance is still valid
                     try {
                         if (!entry.instance || !entry.instance.canvas) {
-                            orphaned.push(canvasElement);
+                            orphanedCharts.push(canvasElement);
                         }
                     } catch (e) {
-                        orphaned.push(canvasElement);
+                        orphanedCharts.push(canvasElement);
                     }
                 }
             });
-
-            orphaned.forEach(canvasElement => {
-                console.log('Cleaning up orphaned chart instance');
+            orphanedCharts.forEach(canvasElement => {
                 this.unregisterChart(canvasElement);
+                cleanedCharts++;
             });
 
-            return orphaned.length;
+            // Clean up stale timers (older than 1 hour with no matching chart)
+            const staleTimers = [];
+            const now = Date.now();
+            this.timers.forEach((meta, timerId) => {
+                if (meta.role !== 'global' && now - meta.createdAt > 60 * 60 * 1000) {
+                    const hasChart = this.getChartByRole(meta.role);
+                    if (!hasChart) {
+                        staleTimers.push(timerId);
+                    }
+                }
+            });
+            staleTimers.forEach(timerId => {
+                this.clearTimer(timerId);
+                cleanedTimers++;
+            });
+
+            if (cleanedCharts > 0 || cleanedTimers > 0) {
+                console.log(`Cleanup: ${cleanedCharts} orphaned charts, ${cleanedTimers} stale timers`);
+            }
+
+            return { cleanedCharts, cleanedTimers };
         }
     };
 
     // Run periodic cleanup every 5 minutes
     window.chartRegistry.trackTimer(setInterval(() => {
-        const cleaned = window.chartRegistry.cleanupOrphanedCharts();
-        if (cleaned > 0) {
-            console.log(`Cleaned up ${cleaned} orphaned chart instance(s)`);
-        }
-    }, 5 * 60 * 1000));
+        window.chartRegistry.cleanupOrphaned();
+    }, 5 * 60 * 1000), 'global', 'periodic-cleanup');
 
     // ============================================================================
     // UTILITY FUNCTIONS
@@ -254,59 +433,38 @@
 
     /**
      * Validate chart data integrity
-     * @param {Array} data - Chart data array
-     * @param {string} role - Chart role for logging
-     * @returns {Object} Validation result with isValid and errors
      */
     window.validateChartData = function (data, role = 'unknown') {
         const errors = [];
 
         if (!Array.isArray(data)) {
             errors.push('Data is not an array');
-            return { isValid: false, errors };
+            return { isValid: false, errors, validRows: 0, totalRows: 0 };
         }
 
         if (data.length === 0) {
             errors.push('Data array is empty');
-            return { isValid: false, errors };
+            return { isValid: false, errors, validRows: 0, totalRows: 0 };
         }
 
-        // Check for expected data structure
-        const expectedLength = 5; // [timeStr, lowPrice, mediumPrice, highPrice, marginPrice]
+        const expectedLength = 5;
         let validRows = 0;
         let invalidRows = 0;
 
         data.forEach((row, index) => {
             if (!Array.isArray(row)) {
                 invalidRows++;
-                errors.push(`Row ${index} is not an array`);
                 return;
             }
-
             if (row.length !== expectedLength) {
                 invalidRows++;
-                errors.push(`Row ${index} has incorrect length: expected ${expectedLength}, got ${row.length}`);
                 return;
             }
-
-            // Validate data types
             const [timeStr, lowPrice, mediumPrice, highPrice, marginPrice] = row;
-
             if (typeof timeStr !== 'string' && typeof timeStr !== 'number') {
                 invalidRows++;
-                errors.push(`Row ${index}: timeStr must be string or number, got ${typeof timeStr}`);
                 return;
             }
-
-            // Prices should be numbers (or null/undefined)
-            const prices = [lowPrice, mediumPrice, highPrice, marginPrice];
-            prices.forEach((price, priceIndex) => {
-                if (price !== null && price !== undefined && (typeof price !== 'number' || isNaN(price))) {
-                    invalidRows++;
-                    errors.push(`Row ${index}, price[${priceIndex}]: must be number, null, or undefined, got ${typeof price}`);
-                }
-            });
-
             validRows++;
         });
 
@@ -314,22 +472,12 @@
             console.warn(`Chart data validation for ${role}: ${invalidRows} invalid rows out of ${data.length}`);
         }
 
-        // Consider data valid if at least 80% of rows are valid
         const isValid = validRows >= Math.ceil(data.length * 0.8);
-
-        return {
-            isValid,
-            validRows,
-            invalidRows,
-            totalRows: data.length,
-            errors: errors.slice(0, 10) // Limit error messages
-        };
-    }
+        return { isValid, validRows, invalidRows, totalRows: data.length, errors };
+    };
 
     /**
      * Validate DOM element is still in the document
-     * @param {Element} element - DOM element to validate
-     * @returns {boolean}
      */
     function isElementValid(element) {
         if (!element) return false;
@@ -338,13 +486,48 @@
     }
 
     /**
+     * Get expected date for a chart role
+     */
+    function getExpectedDate(role) {
+        return role === 'today' ? window.getHelsinkiDate(0) : window.getHelsinkiDate(1);
+    }
+
+    /**
+     * Check if chart data matches current expected date
+     */
+    function isChartDataCurrent(role) {
+        const expectedDate = getExpectedDate(role);
+        const storeData = window.chartDataStore.getData(role, expectedDate);
+        if (!storeData || !storeData.data || storeData.data.length === 0) {
+            return false;
+        }
+        
+        // Also check the DOM element's data-date attribute
+        const section = d.getElementById(`${role}Chart`);
+        if (section) {
+            const domDate = section.getAttribute('data-date');
+            if (domDate && domDate !== expectedDate) {
+                console.warn(`Chart ${role}: DOM date ${domDate} != expected ${expectedDate}`);
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    /**
      * Refresh a chart by triggering its HTMX request
-     * @param {string} role - 'today' or 'tomorrow'
      */
     function refreshChart(role) {
+        // Acquire lock
+        if (!window.refreshLock.acquire(role)) {
+            return;
+        }
+
         const chartElement = d.getElementById(`${role}Chart`);
         if (!isElementValid(chartElement)) {
             console.warn(`Cannot refresh ${role} chart: element not found or invalid`);
+            window.refreshLock.release(role);
             return;
         }
 
@@ -352,38 +535,41 @@
         const date = window.getHelsinkiDate(daysOffset);
         const margin = d.body.getAttribute('data-default-margin') || '0';
 
+        // Clear stale data from store
+        window.chartDataStore.clear(role);
+        
+        // Clear timers for this role (they will be recreated)
+        window.chartRegistry.clearTimersForRole(role);
+
         console.log(`Refreshing ${role} chart with date ${date}`);
 
         htmx.ajax('GET', `/partials/prices?date=${date}&role=${role}&margin=${margin}`, {
             target: `#${role}Chart`,
             swap: 'outerHTML'
+        }).then(() => {
+            window.refreshLock.release(role);
+        }).catch((e) => {
+            console.error(`Error refreshing ${role} chart:`, e);
+            window.refreshLock.release(role);
         });
     }
 
     /**
-     * Check if a chart has valid data
-     * @param {string} role - 'today' or 'tomorrow'
-     * @returns {boolean}
+     * Check if a chart has valid, current data
      */
     function chartHasData(role) {
         const chartElement = d.querySelector(`#${role}Chart canvas`);
         if (!isElementValid(chartElement)) return false;
         if (!chartElement._chartInstance) return false;
-        if (!chartElement._validData || !Array.isArray(chartElement._validData)) return false;
-        if (chartElement._validData.length === 0) return false;
-
-        // Additional validation: check if chart instance is still valid
-        try {
-            if (!chartElement._chartInstance.canvas) return false;
-        } catch (e) {
-            return false;
-        }
-
+        
+        // Check data store for current data
+        if (!isChartDataCurrent(role)) return false;
+        
         return true;
     }
 
     // ============================================================================
-    // MIDNIGHT TRANSITION
+    // MIDNIGHT TRANSITION AND DATE VALIDATION
     // ============================================================================
 
     let currentDate = window.getHelsinkiDate(0);
@@ -395,15 +581,23 @@
             console.log(`Midnight transition detected: ${currentDate} -> ${newDate}`);
             currentDate = newDate;
 
+            // Clear ALL stale data
+            window.chartDataStore.clearAll();
+
             // Refresh both charts with new dates
             refreshChart('today');
-            refreshChart('tomorrow');
+            
+            // Small delay for tomorrow to avoid race conditions
+            setTimeout(() => {
+                refreshChart('tomorrow');
+            }, 500);
         }
     }
 
     // Check for midnight every minute
     midnightCheckTimer = window.chartRegistry.trackTimer(
-        setInterval(checkMidnightTransition, ONE_MINUTE)
+        setInterval(checkMidnightTransition, ONE_MINUTE),
+        'global', 'midnight-check'
     );
 
     // ============================================================================
@@ -420,7 +614,6 @@
         console.log('Starting afternoon polling for tomorrow\'s prices');
         afternoonPollingActive = true;
 
-        // Poll every minute
         afternoonPollingTimer = window.chartRegistry.trackTimer(
             setInterval(() => {
                 const hour = getHelsinkiHour();
@@ -428,10 +621,10 @@
                     console.log('Afternoon polling: checking for tomorrow\'s prices');
                     refreshChart('tomorrow');
                 } else {
-                    // Outside the window, stop polling
                     stopAfternoonPolling();
                 }
-            }, ONE_MINUTE)
+            }, ONE_MINUTE),
+            'global', 'afternoon-polling'
         );
     }
 
@@ -456,31 +649,45 @@
         }
     }
 
-    // Check afternoon window every minute
     afternoonWindowCheckTimer = window.chartRegistry.trackTimer(
-        setInterval(checkAfternoonWindow, ONE_MINUTE)
+        setInterval(checkAfternoonWindow, ONE_MINUTE),
+        'global', 'afternoon-window-check'
     );
-    checkAfternoonWindow(); // Check immediately on load
+    checkAfternoonWindow();
 
     // ============================================================================
-    // NOW LINE UPDATE
+    // NOW LINE UPDATE (uses data store, not canvas properties)
     // ============================================================================
 
     /**
      * Update the "now" line on today's chart
+     * Uses data from the global store, not canvas properties
      */
     window.updateNowLine = function () {
+        // First, verify data is current
+        if (!isChartDataCurrent('today')) {
+            console.log('Skipping now line update: data not current');
+            return;
+        }
+
         const todayChartCanvas = d.querySelector('#todayChart canvas');
         if (!isElementValid(todayChartCanvas)) return;
         if (!todayChartCanvas._chartInstance) return;
 
         const chart = todayChartCanvas._chartInstance;
-        const validData = todayChartCanvas._validData;
-        const granularity = todayChartCanvas._granularity || 'quarter_hour';
+        
+        // Get data from the global store (single source of truth)
+        const storeData = window.chartDataStore.getData('today', getExpectedDate('today'));
+        if (!storeData || !storeData.data || storeData.data.length === 0) {
+            console.log('Skipping now line update: no valid data in store');
+            return;
+        }
 
-        if (!validData || !Array.isArray(validData) || validData.length === 0) return;
+        const validData = storeData.data;
+        const granularity = storeData.granularity || 'quarter_hour';
+        const priceRange = storeData.priceRange || { minPrice: 0, maxPrice: 15 };
 
-        // Validate chart instance is still valid
+        // Validate chart instance
         try {
             if (!chart.canvas || !chart.options || !chart.options.plugins) return;
             if (!chart.options.plugins.annotation || !chart.options.plugins.annotation.annotations) return;
@@ -505,12 +712,9 @@
         if (dataPointIndex >= 0) {
             try {
                 const annotations = chart.options.plugins.annotation.annotations;
-                // Remove existing now line
                 if (annotations.nowline) {
                     delete annotations.nowline;
                 }
-                // Add new now line
-                const priceRange = todayChartCanvas._originalPriceRange || { minPrice: 0, maxPrice: 10 };
                 annotations.nowline = {
                     type: 'line',
                     xMin: dataPointIndex,
@@ -525,7 +729,7 @@
                     yScaleID: 'y'
                 };
                 chart.update('none');
-                console.log('Now line updated');
+                console.log('Now line updated to index', dataPointIndex);
             } catch (e) {
                 console.warn('Error updating now line:', e);
             }
@@ -534,29 +738,29 @@
 
     /**
      * Update the current price display in the header
+     * Uses data from the global store
      */
     window.updateCurrentPrice = function () {
         const priceElement = d.getElementById('current-price');
-        if (!isElementValid(priceElement)) {
-            console.log('Price element not found or invalid');
+        if (!isElementValid(priceElement)) return;
+
+        // Verify data is current
+        if (!isChartDataCurrent('today')) {
+            priceElement.textContent = '-- c/kWh';
+            priceElement.style.color = '';
             return;
         }
 
-        const todayChartCanvas = d.querySelector('#todayChart canvas');
-        if (!isElementValid(todayChartCanvas) || !todayChartCanvas._validData) {
-            console.log('Today chart element or data not found');
+        const storeData = window.chartDataStore.getData('today', getExpectedDate('today'));
+        if (!storeData || !storeData.data || storeData.data.length === 0) {
+            priceElement.textContent = '-- c/kWh';
+            priceElement.style.color = '';
             return;
         }
 
-        const validData = todayChartCanvas._validData;
-        if (!Array.isArray(validData) || validData.length === 0) {
-            console.log('Today chart data is invalid or empty');
-            return;
-        }
+        const validData = storeData.data;
+        const granularity = storeData.granularity || 'quarter_hour';
 
-        const granularity = todayChartCanvas._granularity || 'quarter_hour';
-
-        // Get current time interval
         const now = new Date();
         const currentHour = now.getHours();
         const currentMinutes = now.getMinutes();
@@ -573,44 +777,32 @@
         if (dataPointIndex >= 0 && dataPointIndex < validData.length) {
             const row = validData[dataPointIndex];
             if (!Array.isArray(row) || row.length < 5) {
-                console.warn('Invalid row data at index', dataPointIndex);
                 priceElement.textContent = '-- c/kWh';
                 priceElement.style.color = '';
                 return;
             }
 
-            const [timeStr, lowPrice, mediumPrice, highPrice, marginPrice] = row;
-
-            // Validate prices are numbers
+            const [, lowPrice, mediumPrice, highPrice, marginPrice] = row;
             const safeLow = typeof lowPrice === 'number' && !isNaN(lowPrice) ? lowPrice : 0;
             const safeMed = typeof mediumPrice === 'number' && !isNaN(mediumPrice) ? mediumPrice : 0;
             const safeHigh = typeof highPrice === 'number' && !isNaN(highPrice) ? highPrice : 0;
             const safeMargin = typeof marginPrice === 'number' && !isNaN(marginPrice) ? marginPrice : 0;
 
-            // Calculate spot price (sum of low, med, high)
             const spotPrice = safeLow + safeMed + safeHigh;
             const totalPrice = spotPrice + safeMargin;
-
-            // Determine which price to show (prefer spot if available, otherwise total)
             const displayPrice = spotPrice > 0 ? spotPrice : totalPrice;
             const priceText = displayPrice.toFixed(2) + ' c/kWh';
 
-            // Update the element
             priceElement.textContent = priceText;
 
-            // Set color based on price (green for low, yellow for medium, red for high)
-            // Using same thresholds and colors as backend: < 5.0 = green, 5.0-15.0 = yellow, >= 15.0 = red
             if (displayPrice < 5.0) {
-                priceElement.style.color = '#2ecc71'; // green
+                priceElement.style.color = '#2ecc71';
             } else if (displayPrice < 15.0) {
-                priceElement.style.color = '#f1c40f'; // yellow (same as backend bar coloring)
+                priceElement.style.color = '#f1c40f';
             } else {
-                priceElement.style.color = '#e74c3c'; // red
+                priceElement.style.color = '#e74c3c';
             }
-
-            console.log('Current price updated:', priceText);
         } else {
-            console.log('Current time interval not found in data');
             priceElement.textContent = '-- c/kWh';
             priceElement.style.color = '';
         }
@@ -620,69 +812,121 @@
      * Redraw existing charts (for window resize or screen re-enablement)
      */
     window.redrawCharts = function () {
-        // Use requestAnimationFrame to ensure DOM is ready
         requestAnimationFrame(() => {
-            const todayCanvas = d.querySelector('#todayChart canvas');
-            const tomorrowCanvas = d.querySelector('#tomorrowChart canvas');
-
-            if (isElementValid(todayCanvas) && todayCanvas._chartInstance) {
-                try {
-                    // Force Chart.js to recalculate size
-                    todayCanvas._chartInstance.resize();
-                    // Update without animation to refresh display
-                    todayCanvas._chartInstance.update('none');
-                } catch (e) {
-                    console.warn('Error redrawing today chart:', e);
+            ['today', 'tomorrow'].forEach(role => {
+                const canvas = d.querySelector(`#${role}Chart canvas`);
+                if (isElementValid(canvas) && canvas._chartInstance) {
+                    // Verify data is current before redrawing
+                    if (!isChartDataCurrent(role)) {
+                        console.log(`Skipping redraw for ${role}: data not current, triggering refresh`);
+                        refreshChart(role);
+                        return;
+                    }
+                    try {
+                        canvas._chartInstance.resize();
+                        canvas._chartInstance.update('none');
+                    } catch (e) {
+                        console.warn(`Error redrawing ${role} chart:`, e);
+                    }
                 }
-            }
-
-            if (isElementValid(tomorrowCanvas) && tomorrowCanvas._chartInstance) {
-                try {
-                    // Force Chart.js to recalculate size
-                    tomorrowCanvas._chartInstance.resize();
-                    // Update without animation to refresh display
-                    tomorrowCanvas._chartInstance.update('none');
-                } catch (e) {
-                    console.warn('Error redrawing tomorrow chart:', e);
-                }
-            }
+            });
         });
     };
 
     // ============================================================================
-    // 15-MINUTE HEALTH CHECK
+    // 15-MINUTE HEALTH CHECK WITH DATE VALIDATION
     // ============================================================================
 
     let healthCheckTimer = null;
 
     function fifteenMinuteHealthCheck() {
-        console.log('15-minute health check: updating now line and checking for missing data');
+        console.log('15-minute health check');
 
-        // Update "now" line on today's chart
-        window.updateNowLine();
+        // First, check if dates are still correct
+        const todayExpected = window.getHelsinkiDate(0);
+        const tomorrowExpected = window.getHelsinkiDate(1);
 
-        // Update current price display
-        window.updateCurrentPrice();
-
-        // Check if either chart is missing data and refresh if needed
-        if (!chartHasData('today')) {
-            console.log('Today\'s chart has no data, refreshing...');
+        // Check today's data
+        const todayData = window.chartDataStore.getData('today');
+        if (!todayData || todayData.date !== todayExpected || window.chartDataStore.isStale('today')) {
+            console.log(`Today's data invalid or stale (have: ${todayData?.date}, expected: ${todayExpected}), refreshing...`);
             refreshChart('today');
+        } else {
+            window.updateNowLine();
+            window.updateCurrentPrice();
         }
 
-        if (!chartHasData('tomorrow')) {
-            console.log('Tomorrow\'s chart has no data, refreshing...');
+        // Check tomorrow's data
+        const tomorrowData = window.chartDataStore.getData('tomorrow');
+        if (!tomorrowData || tomorrowData.date !== tomorrowExpected || window.chartDataStore.isStale('tomorrow')) {
+            console.log(`Tomorrow's data invalid or stale (have: ${tomorrowData?.date}, expected: ${tomorrowExpected}), refreshing...`);
             refreshChart('tomorrow');
         }
 
-        // Clean up orphaned charts
-        window.chartRegistry.cleanupOrphanedCharts();
+        // Cleanup orphaned resources
+        window.chartRegistry.cleanupOrphaned();
     }
 
-    // Run health check every 15 minutes
     healthCheckTimer = window.chartRegistry.trackTimer(
-        setInterval(fifteenMinuteHealthCheck, FIFTEEN_MINUTES)
+        setInterval(fifteenMinuteHealthCheck, FIFTEEN_MINUTES),
+        'global', 'health-check'
     );
+
+    // ============================================================================
+    // VISIBILITY CHANGE - WITH DATE VALIDATION
+    // ============================================================================
+
+    let lastVisibilityChange = 0;
+
+    const visibilityChangeHandler = () => {
+        if (!document.hidden) {
+            const now = Date.now();
+            // Debounce - ignore if within 1 second of last change
+            if (now - lastVisibilityChange < 1000) return;
+            lastVisibilityChange = now;
+
+            console.log('Screen re-enabled, validating chart data...');
+            
+            // Check if dates are still valid
+            const todayExpected = window.getHelsinkiDate(0);
+            const tomorrowExpected = window.getHelsinkiDate(1);
+            
+            // Update current date tracking
+            if (currentDate !== todayExpected) {
+                console.log(`Date changed while hidden: ${currentDate} -> ${todayExpected}`);
+                currentDate = todayExpected;
+                window.chartDataStore.clearAll();
+                refreshChart('today');
+                setTimeout(() => refreshChart('tomorrow'), 500);
+                return;
+            }
+
+            // Validate and refresh if needed
+            let needsRefresh = false;
+            
+            ['today', 'tomorrow'].forEach((role, index) => {
+                const expectedDate = index === 0 ? todayExpected : tomorrowExpected;
+                const storeData = window.chartDataStore.getData(role);
+                
+                if (!storeData || storeData.date !== expectedDate || window.chartDataStore.isStale(role)) {
+                    console.log(`${role} chart needs refresh: storeDate=${storeData?.date}, expected=${expectedDate}, stale=${window.chartDataStore.isStale(role)}`);
+                    setTimeout(() => refreshChart(role), index * 500);
+                    needsRefresh = true;
+                }
+            });
+
+            if (!needsRefresh) {
+                // Data is valid, just redraw
+                setTimeout(() => {
+                    window.redrawCharts();
+                    window.updateNowLine();
+                    window.updateCurrentPrice();
+                }, 100);
+            }
+        }
+    };
+
+    window.chartRegistry.trackEventListener(document, 'visibilitychange', visibilityChangeHandler);
 
     // ============================================================================
     // SSE EVENT HANDLING
@@ -691,17 +935,14 @@
     let sseEventSource = null;
 
     function setupSSE() {
-        // Close existing connection if any
         if (sseEventSource) {
-            console.log('Closing existing SSE connection');
             window.chartRegistry.closeSSE(sseEventSource);
         }
 
-        console.log('Establishing SSE connection to /events/version');
         sseEventSource = new EventSource('/events/version');
         window.chartRegistry.trackSSE(sseEventSource);
 
-        const dayUpdatedHandler = function (event) {
+        sseEventSource.addEventListener('day_updated', function (event) {
             try {
                 const data = JSON.parse(event.data);
                 console.log('Day update event received:', data);
@@ -710,52 +951,35 @@
                 const todayDate = window.getHelsinkiDate(0);
                 const tomorrowDate = window.getHelsinkiDate(1);
 
-                // Refresh the appropriate chart
                 if (updatedDate === todayDate) {
-                    console.log('Today\'s prices updated');
+                    window.chartDataStore.clear('today');
                     refreshChart('today');
                 } else if (updatedDate === tomorrowDate) {
-                    console.log('Tomorrow\'s prices updated');
+                    window.chartDataStore.clear('tomorrow');
                     refreshChart('tomorrow');
-                    // Stop afternoon polling since we got the data
                     stopAfternoonPolling();
                 }
             } catch (e) {
                 console.error('Error parsing day_updated event:', e);
             }
-        };
+        });
 
-        const versionUpdateHandler = function (event) {
+        sseEventSource.addEventListener('version_update', function (event) {
             try {
                 const data = JSON.parse(event.data);
                 const currentVersion = d.body.getAttribute('data-app-version');
-                console.log('Version update received:', data.version, '(current:', currentVersion + ')');
                 if (data.version && data.version !== currentVersion) {
-                    console.log('New version available:', data.version, '- showing reload toast');
+                    console.log('New version available:', data.version);
                     showUpdateToast();
                 }
             } catch (e) {
                 console.error('Error parsing version_update event:', e);
             }
+        });
+
+        sseEventSource.onerror = function () {
+            console.log('SSE connection error, will reconnect automatically');
         };
-
-        const openHandler = function () {
-            console.log('SSE connection opened successfully');
-        };
-
-        const errorHandler = function (event) {
-            console.log('SSE connection error, readyState:', sseEventSource.readyState, 'event:', event);
-        };
-
-        sseEventSource.onopen = openHandler;
-        sseEventSource.addEventListener('day_updated', dayUpdatedHandler);
-        sseEventSource.addEventListener('version_update', versionUpdateHandler);
-        sseEventSource.onerror = errorHandler;
-
-        // Store handlers for cleanup
-        sseEventSource._dayUpdatedHandler = dayUpdatedHandler;
-        sseEventSource._versionUpdateHandler = versionUpdateHandler;
-        sseEventSource._errorHandler = errorHandler;
     }
 
     setupSSE();
@@ -777,12 +1001,10 @@
             reloadBtn.onclick = () => location.reload();
         }
 
-        // Clear existing countdown timer if any
         if (toastCountdownTimer) {
             window.chartRegistry.clearTimer(toastCountdownTimer);
         }
 
-        // Auto-reload after 30 seconds
         let countdown = 30;
         const countdownEl = d.getElementById('countdown');
         toastCountdownTimer = window.chartRegistry.trackTimer(
@@ -796,17 +1018,18 @@
                     toastCountdownTimer = null;
                     location.reload();
                 }
-            }, 1000)
+            }, 1000),
+            'global', 'toast-countdown'
         );
     }
 
     // ============================================================================
-    // FULLSCREEN TOGGLE
+    // OTHER EVENT HANDLERS
     // ============================================================================
 
     const fullscreenBtn = d.getElementById('fullscreen-btn');
     if (fullscreenBtn) {
-        const fullscreenHandler = () => {
+        window.chartRegistry.trackEventListener(fullscreenBtn, 'click', () => {
             if (!document.fullscreenElement) {
                 d.documentElement.requestFullscreen().catch(err => {
                     console.log('Fullscreen request failed:', err);
@@ -814,118 +1037,48 @@
             } else {
                 document.exitFullscreen();
             }
-        };
-        window.chartRegistry.trackEventListener(fullscreenBtn, 'click', fullscreenHandler);
+        });
     }
 
-    // ============================================================================
-    // WINDOW RESIZE HANDLER
-    // ============================================================================
-
     let resizeTimeout = null;
+    window.chartRegistry.trackEventListener(window, 'resize', () => {
+        if (resizeTimeout) clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(() => {
+            window.redrawCharts();
+            resizeTimeout = null;
+        }, 300);
+    });
 
-    const resizeHandler = () => {
-        if (resizeTimeout) {
-            clearTimeout(resizeTimeout);
-        }
-        resizeTimeout = window.chartRegistry.trackTimer(
-            setTimeout(() => {
-                // Redraw charts if they exist
-                if (window.redrawCharts) {
-                    window.redrawCharts();
-                }
-                resizeTimeout = null;
-            }, 300)
-        );
-    };
-
-    window.chartRegistry.trackEventListener(window, 'resize', resizeHandler);
-
-    // ============================================================================
-    // VISIBILITY CHANGE HANDLER (for screen re-enablement)
-    // ============================================================================
-
-    const visibilityChangeHandler = () => {
-        if (!document.hidden) {
-            // Screen was re-enabled, force chart resize
-            console.log('Screen re-enabled, resizing charts...');
-            setTimeout(() => {
-                if (window.redrawCharts) {
-                    window.redrawCharts();
-                }
-            }, 100); // Small delay to ensure DOM is ready
-        }
-    };
-
-    window.chartRegistry.trackEventListener(document, 'visibilitychange', visibilityChangeHandler);
-
-    // Handle page show event (when page is restored from back/forward cache or screen re-enabled)
-    const pageShowHandler = (event) => {
+    window.chartRegistry.trackEventListener(window, 'pageshow', (event) => {
         if (event.persisted) {
-            // Page was restored from cache
-            console.log('Page restored from cache, resizing charts...');
-        } else {
-            // Page was shown normally
-            console.log('Page shown, resizing charts...');
+            console.log('Page restored from cache, validating data...');
+            // Trigger visibility change logic
+            visibilityChangeHandler();
         }
-        setTimeout(() => {
-            if (window.redrawCharts) {
-                window.redrawCharts();
-            }
-        }, 100);
-    };
+    });
 
-    window.chartRegistry.trackEventListener(window, 'pageshow', pageShowHandler);
+    window.chartRegistry.trackEventListener(window, 'focus', () => {
+        // Just redraw, visibility handler will validate data
+        setTimeout(() => window.redrawCharts(), 100);
+    });
 
-    // Handle window focus (when screen is re-enabled, window regains focus)
-    const focusHandler = () => {
-        console.log('Window regained focus, resizing charts...');
-        setTimeout(() => {
-            if (window.redrawCharts) {
-                window.redrawCharts();
-            }
-        }, 100);
-    };
-
-    window.chartRegistry.trackEventListener(window, 'focus', focusHandler);
-
-    // ============================================================================
-    // KEYBOARD SHORTCUTS
-    // ============================================================================
-
-    const keydownHandler = (event) => {
-        // Ctrl+Shift+R for force refresh
+    window.chartRegistry.trackEventListener(d, 'keydown', (event) => {
         if (event.ctrlKey && event.shiftKey && event.key === 'R') {
             event.preventDefault();
             console.log('Manual refresh triggered');
+            window.chartDataStore.clearAll();
             refreshChart('today');
-            refreshChart('tomorrow');
+            setTimeout(() => refreshChart('tomorrow'), 500);
         }
-    };
+    });
 
-    window.chartRegistry.trackEventListener(d, 'keydown', keydownHandler);
-
-    // ============================================================================
-    // BEFOREUNLOAD CLEANUP HANDLER
-    // ============================================================================
-
-    const beforeUnloadHandler = () => {
-        console.log('Page unloading, performing cleanup...');
+    window.chartRegistry.trackEventListener(window, 'beforeunload', () => {
         window.chartRegistry.cleanup();
-    };
+    });
 
-    window.chartRegistry.trackEventListener(window, 'beforeunload', beforeUnloadHandler);
-    window.chartRegistry.trackEventListener(window, 'pagehide', beforeUnloadHandler);
-
-    // Also register cleanup for visibility change to hidden (when tab is backgrounded)
-    const visibilityCleanupHandler = () => {
-        if (document.hidden) {
-            // Optional: perform light cleanup when tab is hidden
-            // Full cleanup will happen on beforeunload
-        }
-    };
-
-    window.chartRegistry.trackEventListener(document, 'visibilitychange', visibilityCleanupHandler);
+    window.chartRegistry.trackEventListener(window, 'pagehide', () => {
+        window.chartRegistry.cleanup();
+    });
 
     console.log('Spot is a Dog - Frontend initialized');
 })();

@@ -36,6 +36,11 @@
             return;
         }
 
+        // Clear all timers for this role FIRST (before destroying old chart)
+        if (window.chartRegistry) {
+            window.chartRegistry.clearTimersForRole(role);
+        }
+
         // Localize the "Today" or "Tomorrow" label
         if (chartHeadEl) {
             let localizedLabel;
@@ -92,82 +97,40 @@
             chartElement._chartInstance = null;
         }
 
-        // Clean up timers using registry
-        if (chartElement._nowLineTimer) {
-            if (window.chartRegistry) {
-                window.chartRegistry.clearTimer(chartElement._nowLineTimer);
-            } else {
-                clearInterval(chartElement._nowLineTimer);
-                clearTimeout(chartElement._nowLineTimer);
-            }
-            chartElement._nowLineTimer = null;
-        }
+        console.log('Creating chart for:', date, 'role:', role, 'margin:', margin);
 
-        // Clean up event listeners using registry
-        if (chartElement._visibilityHandler) {
-            if (window.chartRegistry) {
-                window.chartRegistry.removeEventListeners(document);
-            } else {
-                document.removeEventListener('visibilitychange', chartElement._visibilityHandler);
+        // Fetch chart data with cache-busting to prevent stale data
+        const cacheBuster = Date.now();
+        fetch(`/api/chart-data?date_str=${encodeURIComponent(date)}&margin=${margin}&_t=${cacheBuster}`, {
+            cache: 'no-store',  // Force bypass of browser cache
+            headers: {
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
             }
-            chartElement._visibilityHandler = null;
-        }
-        if (chartElement._focusHandler) {
-            if (window.chartRegistry) {
-                window.chartRegistry.removeEventListeners(window);
-            } else {
-                window.removeEventListener('focus', chartElement._focusHandler);
-            }
-            chartElement._focusHandler = null;
-        }
-        if (chartElement._pageShowHandler) {
-            if (window.chartRegistry) {
-                window.chartRegistry.removeEventListeners(window);
-            } else {
-                window.removeEventListener('pageshow', chartElement._pageShowHandler);
-            }
-            chartElement._pageShowHandler = null;
-        }
-        if (chartElement._pageHideHandler) {
-            if (window.chartRegistry) {
-                window.chartRegistry.removeEventListeners(window);
-            } else {
-                window.removeEventListener('pagehide', chartElement._pageHideHandler);
-            }
-            chartElement._pageHideHandler = null;
-        }
-        if (chartElement._visibilityResizeHandler) {
-            if (window.chartRegistry) {
-                window.chartRegistry.removeEventListeners(document);
-            } else {
-                document.removeEventListener('visibilitychange', chartElement._visibilityResizeHandler);
-            }
-            chartElement._visibilityResizeHandler = null;
-        }
-        if (chartElement._focusResizeHandler) {
-            if (window.chartRegistry) {
-                window.chartRegistry.removeEventListeners(window);
-            } else {
-                window.removeEventListener('focus', chartElement._focusResizeHandler);
-            }
-            chartElement._focusResizeHandler = null;
-        }
-        if (chartElement._resizeHandler) {
-            if (window.chartRegistry) {
-                window.chartRegistry.removeEventListeners(window);
-            } else {
-                window.removeEventListener('resize', chartElement._resizeHandler);
-            }
-            chartElement._resizeHandler = null;
-        }
-
-        console.log('Creating chart for:', date, 'margin:', margin);
-
-        // Fetch chart data
-        fetch(`/api/chart-data?date_str=${encodeURIComponent(date)}&margin=${margin}`)
-            .then(response => response.json())
+        })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
-                console.log('Chart data received for', date, ':', data);
+                console.log('Chart data received for', date, 'role:', role, 'rows:', data.data ? data.data.length : 0);
+
+                // Verify chart element is still in DOM and matches expected date
+                if (!document.body.contains(chartElement)) {
+                    console.warn('Chart element no longer in DOM, aborting');
+                    return;
+                }
+                
+                const sectionElement = document.getElementById(role + 'Chart');
+                if (sectionElement) {
+                    const currentDate = sectionElement.getAttribute('data-date');
+                    if (currentDate !== date) {
+                        console.warn(`Chart date mismatch: section has ${currentDate}, fetched ${date}. Aborting.`);
+                        return;
+                    }
+                }
 
                 // Update date string with localized format
                 const currentDateStringEl = document.getElementById(dateStringId);
@@ -224,13 +187,11 @@
                     return;
                 }
 
-                // Use validation function if available, otherwise use basic filter
-                let validationResult = null;
+                // Use validation function if available
                 if (typeof window.validateChartData === 'function') {
-                    validationResult = window.validateChartData(data.data, role);
+                    const validationResult = window.validateChartData(data.data, role);
                     if (!validationResult.isValid) {
                         console.error('Chart data validation failed:', validationResult.errors);
-                        // Still try to use valid rows if we have enough
                         if (validationResult.validRows < Math.ceil(data.data.length * 0.5)) {
                             chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px; text-align: center;">Error: Insufficient valid data</div>';
                             return;
@@ -242,37 +203,14 @@
                 const validData = data.data.filter(row => {
                     if (!Array.isArray(row)) return false;
                     if (row.length !== 5) return false;
-                    // Additional validation: check that timeStr is valid
                     const [timeStr] = row;
                     if (timeStr === null || timeStr === undefined) return false;
-                    // Check that at least some prices are numbers
                     const [, lowPrice, mediumPrice, highPrice, marginPrice] = row;
                     const hasValidPrice = [lowPrice, mediumPrice, highPrice, marginPrice].some(
                         price => typeof price === 'number' && !isNaN(price) && isFinite(price)
                     );
                     return hasValidPrice;
                 });
-
-                // Track metadata
-                const fetchTime = Date.now();
-                const fetchDate = new Date(fetchTime);
-                if (window.chartDataTimestamps) {
-                    window.chartDataTimestamps[role] = fetchTime;
-                }
-                if (window.chartDataMetadata) {
-                    const intervalCountValue = typeof data.intervalCount === 'number'
-                        ? data.intervalCount
-                        : validData.length;
-                    const expectedIntervalCountValue = typeof data.expectedIntervalCount === 'number'
-                        ? data.expectedIntervalCount
-                        : 96;
-                    window.chartDataMetadata[role] = {
-                        fetchedDate: fetchDate.toDateString(),
-                        fetchedHour: fetchDate.getHours(),
-                        intervalCount: intervalCountValue,
-                        expectedIntervalCount: expectedIntervalCountValue
-                    };
-                }
 
                 if (validData.length === 0) {
                     console.error('No valid data rows after filtering');
@@ -286,52 +224,26 @@
                     console.warn(`Warning: Only ${validData.length} valid data points, expected at least ${Math.ceil(expectedIntervals * 0.5)}`);
                 }
 
+                // Store data in global data store (single source of truth)
+                const granularity = data.granularity || 'quarter_hour';
+                const maxPrice = Math.max(15, data.maxPrice);
+                const minPrice = data.minPrice;
+                const priceRange = { minPrice, maxPrice };
+                
+                if (window.chartDataStore) {
+                    window.chartDataStore.setData(role, date, validData, granularity, priceRange);
+                }
+
                 // Process data for Chart.js
                 const labels = [];
                 const lowData = [];
                 const medData = [];
                 const highData = [];
                 const marginData = [];
-                const tooltips = [];
 
                 validData.forEach(row => {
                     const [timeStr, lowPrice, mediumPrice, highPrice, marginPrice] = row;
                     labels.push(timeStr);
-
-                    // Format time for tooltip
-                    const intervalIndex = parseInt(timeStr);
-                    const hour = Math.floor(intervalIndex / 4);
-                    const quarter = intervalIndex % 4;
-                    const minute = quarter * 15;
-                    const timeFormatted = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-
-                    const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
-                    const totalPrice = spotPrice + (marginPrice || 0);
-
-                    // Create tooltip HTML
-                    let tooltipContent = `
-                        <div style="padding: 8px; font-family: Arial, sans-serif; font-size: 13px; line-height: 1.4;">
-                            <div style="font-weight: bold; margin-bottom: 4px; color: #333;">${timeFormatted}</div>
-                    `;
-                    if (lowPrice !== 0 && lowPrice !== null && lowPrice !== undefined) {
-                        tooltipContent += `<div style="color: #666;">Price: <strong>${lowPrice.toFixed(2)} c/kWh</strong></div>`;
-                    }
-                    if (mediumPrice !== 0 && mediumPrice !== null && mediumPrice !== undefined) {
-                        tooltipContent += `<div style="color: #666;">Price: <strong>${mediumPrice.toFixed(2)} c/kWh</strong></div>`;
-                    }
-                    if (highPrice !== 0 && highPrice !== null && highPrice !== undefined) {
-                        tooltipContent += `<div style="color: #666;">Price: <strong>${highPrice.toFixed(2)} c/kWh</strong></div>`;
-                    }
-                    tooltipContent += `<div style="color: #666;">Margin: <strong>${(marginPrice || 0).toFixed(2)} c/kWh</strong></div>`;
-                    tooltipContent += `
-                            <div style="border-top: 1px solid #ddd; margin-top: 4px; padding-top: 4px; color: #333;">
-                                <strong>Total: ${totalPrice.toFixed(2)} c/kWh</strong>
-                            </div>
-                        </div>
-                    `;
-                    tooltips.push(tooltipContent.trim());
-
-                    // Use null for zero values to skip rendering
                     lowData.push(lowPrice !== 0 ? lowPrice : null);
                     medData.push(mediumPrice !== 0 ? mediumPrice : null);
                     highData.push(highPrice !== 0 ? highPrice : null);
@@ -341,11 +253,8 @@
                 // Responsive settings
                 const isMobile = window.innerWidth <= 900;
                 const isTablet = window.innerWidth > 900 && window.innerWidth <= 1200;
-                const maxPrice = Math.max(15, data.maxPrice);
-                const minPrice = data.minPrice;
 
                 // Prepare annotations for gridlines, vertical lines, and now line
-                // Annotation plugin requires object format with unique keys
                 const annotations = {};
 
                 // Add hourly vertical lines
@@ -417,76 +326,22 @@
                     data: {
                         labels: labels,
                         datasets: [
-                            {
-                                label: 'Low Price',
-                                data: lowData,
-                                backgroundColor: '#2ecc71',
-                                stack: 'price'
-                            },
-                            {
-                                label: 'Medium Price',
-                                data: medData,
-                                backgroundColor: '#f1c40f',
-                                stack: 'price'
-                            },
-                            {
-                                label: 'High Price',
-                                data: highData,
-                                backgroundColor: '#e74c3c',
-                                stack: 'price'
-                            },
-                            {
-                                label: 'Margin',
-                                data: marginData,
-                                backgroundColor: '#666666',
-                                stack: 'price'
-                            }
+                            { label: 'Low Price', data: lowData, backgroundColor: '#2ecc71', stack: 'price' },
+                            { label: 'Medium Price', data: medData, backgroundColor: '#f1c40f', stack: 'price' },
+                            { label: 'High Price', data: highData, backgroundColor: '#e74c3c', stack: 'price' },
+                            { label: 'Margin', data: marginData, backgroundColor: '#666666', stack: 'price' }
                         ]
                     },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
                         plugins: {
-                            legend: {
-                                display: false
-                            },
+                            legend: { display: false },
                             tooltip: {
-                                enabled: false, // Disable default hover tooltip
+                                enabled: false,
                                 mode: 'index',
                                 intersect: false,
-                                animation: false,
-                                backgroundColor: 'rgba(255, 255, 255, 0.95)',
-                                titleColor: '#333',
-                                bodyColor: '#666',
-                                borderColor: '#ddd',
-                                borderWidth: 1,
-                                padding: 8,
-                                callbacks: {
-                                    title: function (context) {
-                                        const index = context[0].dataIndex;
-                                        const timeStr = labels[index];
-                                        const intervalIndex = parseInt(timeStr);
-                                        const hour = Math.floor(intervalIndex / 4);
-                                        const quarter = intervalIndex % 4;
-                                        const minute = quarter * 15;
-                                        return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-                                    },
-                                    label: function (context) {
-                                        const datasetLabel = context.dataset.label || '';
-                                        const value = context.parsed.y;
-                                        if (value === null || value === undefined) return '';
-                                        return datasetLabel + ': ' + value.toFixed(2) + ' c/kWh';
-                                    },
-                                    footer: function (context) {
-                                        const index = context[0].dataIndex;
-                                        const row = validData[index];
-                                        if (!row) return '';
-                                        const [, lowPrice, mediumPrice, highPrice, marginPrice] = row;
-                                        const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
-                                        const totalPrice = spotPrice + (marginPrice || 0);
-                                        return 'Total: ' + totalPrice.toFixed(2) + ' c/kWh';
-                                    }
-                                }
+                                animation: false
                             },
                             annotation: {
                                 annotations: annotations,
@@ -502,21 +357,15 @@
                                 categoryPercentage: 1.0,
                                 ticks: {
                                     color: 'transparent',
-                                    font: {
-                                        size: isMobile ? 10 : (isTablet ? 14 : 12)
-                                    },
+                                    font: { size: isMobile ? 10 : (isTablet ? 14 : 12) },
                                     callback: function (value, index) {
-                                        if (index % 4 === 0) {
-                                            return Math.floor(index / 4).toString();
-                                        }
+                                        if (index % 4 === 0) return Math.floor(index / 4).toString();
                                         return '';
                                     },
                                     maxRotation: 0,
                                     minRotation: 0
                                 },
-                                grid: {
-                                    display: false
-                                }
+                                grid: { display: false }
                             },
                             y: {
                                 id: 'y',
@@ -525,129 +374,90 @@
                                 max: maxPrice,
                                 ticks: {
                                     color: 'white',
-                                    font: {
-                                        size: isMobile ? 12 : (isTablet ? 14 : 12)
-                                    },
+                                    font: { size: isMobile ? 12 : (isTablet ? 14 : 12) },
                                     stepSize: 1,
                                     callback: function (value) {
                                         return value % 5 === 0 ? value : '';
                                     }
                                 },
-                                grid: {
-                                    display: false
-                                }
+                                grid: { display: false }
                             }
                         },
-                        interaction: {
-                            mode: 'index',
-                            intersect: true // Only interact when directly over element
-                        },
+                        interaction: { mode: 'index', intersect: true },
                         onHover: function (event, elements) {
-                            // Disable hover tooltip - do nothing
                             event.native.target.style.cursor = elements.length > 0 ? 'pointer' : 'default';
                         },
                         onClick: function (event, elements) {
-                            // Show tooltip on click
+                            if (elements.length === 0) return;
                             const chart = this;
-                            if (elements.length > 0) {
-                                const element = elements[0];
-                                const datasetIndex = element.datasetIndex;
-                                const index = element.index;
-
-                                // Get tooltip element or create one - use unique ID per chart
-                                const tooltipId = 'chartjs-tooltip-click-' + role;
-                                let tooltipEl = document.getElementById(tooltipId);
-                                if (!tooltipEl) {
-                                    tooltipEl = document.createElement('div');
-                                    tooltipEl.id = tooltipId;
-                                    tooltipEl.style.cssText = 'position: absolute; pointer-events: none; opacity: 0; z-index: 1000; background: rgba(255, 255, 255, 0.95); border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-family: Arial, sans-serif; font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,0.2);';
-                                    document.body.appendChild(tooltipEl);
+                            const index = elements[0].index;
+                            
+                            // Use data from global store to ensure freshness
+                            let rowData = validData[index];
+                            if (window.chartDataStore) {
+                                const storeData = window.chartDataStore.getData(role, date);
+                                if (storeData && storeData.data && storeData.data[index]) {
+                                    rowData = storeData.data[index];
                                 }
-
-                                // Get data for tooltip
-                                const timeStr = labels[index];
-                                const row = validData[index];
-                                if (!row) return;
-
-                                const [, lowPrice, mediumPrice, highPrice, marginPrice] = row;
-                                const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
-                                const totalPrice = spotPrice + (marginPrice || 0);
-
-                                // Format time
-                                const intervalIndex = parseInt(timeStr);
-                                const hour = Math.floor(intervalIndex / 4);
-                                const quarter = intervalIndex % 4;
-                                const minute = quarter * 15;
-                                const timeFormatted = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-
-                                // Build tooltip HTML
-                                let tooltipHTML = `<div style="font-weight: bold; margin-bottom: 4px; color: #333;">${timeFormatted}</div>`;
-                                if (lowPrice !== 0 && lowPrice !== null && lowPrice !== undefined) {
-                                    tooltipHTML += `<div style="color: #666;">Price: <strong>${lowPrice.toFixed(2)} c/kWh</strong></div>`;
-                                }
-                                if (mediumPrice !== 0 && mediumPrice !== null && mediumPrice !== undefined) {
-                                    tooltipHTML += `<div style="color: #666;">Price: <strong>${mediumPrice.toFixed(2)} c/kWh</strong></div>`;
-                                }
-                                if (highPrice !== 0 && highPrice !== null && highPrice !== undefined) {
-                                    tooltipHTML += `<div style="color: #666;">Price: <strong>${highPrice.toFixed(2)} c/kWh</strong></div>`;
-                                }
-                                tooltipHTML += `<div style="color: #666;">Margin: <strong>${(marginPrice || 0).toFixed(2)} c/kWh</strong></div>`;
-                                tooltipHTML += `<div style="border-top: 1px solid #ddd; margin-top: 4px; padding-top: 4px; color: #333;"><strong>Total: ${totalPrice.toFixed(2)} c/kWh</strong></div>`;
-
-                                tooltipEl.innerHTML = tooltipHTML;
-                                tooltipEl.style.opacity = '1';
-
-                                // Position tooltip relative to the chart canvas, not global coordinates
-                                const canvasRect = chart.canvas.getBoundingClientRect();
-                                const tooltipWidth = tooltipEl.offsetWidth || 200;
-                                const tooltipHeight = tooltipEl.offsetHeight || 100;
-
-                                // Calculate position relative to canvas
-                                const x = event.native.clientX - canvasRect.left;
-                                const y = event.native.clientY - canvasRect.top;
-
-                                // Position tooltip near the click, but keep it within chart bounds
-                                let leftPos = canvasRect.left + x + 10;
-                                let topPos = canvasRect.top + y - tooltipHeight - 10;
-
-                                // Adjust if tooltip would go off screen
-                                if (leftPos + tooltipWidth > window.innerWidth) {
-                                    leftPos = canvasRect.left + x - tooltipWidth - 10;
-                                }
-                                if (topPos < 0) {
-                                    topPos = canvasRect.top + y + 10;
-                                }
-
-                                tooltipEl.style.left = leftPos + 'px';
-                                tooltipEl.style.top = topPos + 'px';
-
-                                // Hide tooltip when clicking elsewhere
-                                const hideTooltip = function (e) {
-                                    if (!tooltipEl.contains(e.target) && e.target !== chart.canvas) {
-                                        tooltipEl.style.opacity = '0';
-                                        document.removeEventListener('click', hideTooltip);
-                                    }
-                                };
-                                setTimeout(() => {
-                                    document.addEventListener('click', hideTooltip);
-                                }, 0);
                             }
+                            if (!rowData) return;
+
+                            const tooltipId = 'chartjs-tooltip-click-' + role;
+                            let tooltipEl = document.getElementById(tooltipId);
+                            if (!tooltipEl) {
+                                tooltipEl = document.createElement('div');
+                                tooltipEl.id = tooltipId;
+                                tooltipEl.style.cssText = 'position: absolute; pointer-events: none; opacity: 0; z-index: 1000; background: rgba(255, 255, 255, 0.95); border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-family: Arial, sans-serif; font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,0.2);';
+                                document.body.appendChild(tooltipEl);
+                            }
+
+                            const [timeStr, lowPrice, mediumPrice, highPrice, marginPrice] = rowData;
+                            const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
+                            const totalPrice = spotPrice + (marginPrice || 0);
+
+                            const intervalIndex = parseInt(timeStr);
+                            const hour = Math.floor(intervalIndex / 4);
+                            const quarter = intervalIndex % 4;
+                            const minute = quarter * 15;
+                            const timeFormatted = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+
+                            let tooltipHTML = `<div style="font-weight: bold; margin-bottom: 4px; color: #333;">${timeFormatted}</div>`;
+                            if (lowPrice) tooltipHTML += `<div style="color: #666;">Price: <strong>${lowPrice.toFixed(2)} c/kWh</strong></div>`;
+                            if (mediumPrice) tooltipHTML += `<div style="color: #666;">Price: <strong>${mediumPrice.toFixed(2)} c/kWh</strong></div>`;
+                            if (highPrice) tooltipHTML += `<div style="color: #666;">Price: <strong>${highPrice.toFixed(2)} c/kWh</strong></div>`;
+                            tooltipHTML += `<div style="color: #666;">Margin: <strong>${(marginPrice || 0).toFixed(2)} c/kWh</strong></div>`;
+                            tooltipHTML += `<div style="border-top: 1px solid #ddd; margin-top: 4px; padding-top: 4px; color: #333;"><strong>Total: ${totalPrice.toFixed(2)} c/kWh</strong></div>`;
+
+                            tooltipEl.innerHTML = tooltipHTML;
+                            tooltipEl.style.opacity = '1';
+
+                            const canvasRect = chart.canvas.getBoundingClientRect();
+                            const tooltipWidth = tooltipEl.offsetWidth || 200;
+                            const tooltipHeight = tooltipEl.offsetHeight || 100;
+                            const x = event.native.clientX - canvasRect.left;
+                            const y = event.native.clientY - canvasRect.top;
+
+                            let leftPos = canvasRect.left + x + 10;
+                            let topPos = canvasRect.top + y - tooltipHeight - 10;
+                            if (leftPos + tooltipWidth > window.innerWidth) leftPos = canvasRect.left + x - tooltipWidth - 10;
+                            if (topPos < 0) topPos = canvasRect.top + y + 10;
+
+                            tooltipEl.style.left = leftPos + 'px';
+                            tooltipEl.style.top = topPos + 'px';
+
+                            const hideTooltip = function (e) {
+                                if (!tooltipEl.contains(e.target) && e.target !== chart.canvas) {
+                                    tooltipEl.style.opacity = '0';
+                                    document.removeEventListener('click', hideTooltip);
+                                }
+                            };
+                            setTimeout(() => document.addEventListener('click', hideTooltip), 0);
                         },
-                        animation: {
-                            duration: 0
-                        }
+                        animation: { duration: 0 }
                     }
                 };
 
-                // Debug: Log annotation configuration
-                const annotationKeys = Object.keys(annotations);
-                console.log('Annotations config:', {
-                    count: annotationKeys.length,
-                    keys: annotationKeys.slice(0, 5),
-                    sample: annotations[annotationKeys[0]]
-                });
-
-                // Validate chart element is still in DOM before creating chart
+                // Verify chart element is still in DOM
                 if (!document.body.contains(chartElement)) {
                     console.error('Chart element no longer in DOM, aborting chart creation');
                     return;
@@ -663,18 +473,12 @@
                     return;
                 }
 
-                // Verify annotation plugin is loaded
-                if (!chart.options.plugins.annotation) {
-                    console.error('Annotation plugin not found!');
-                } else {
-                    console.log('Annotation plugin loaded, annotations:', chart.options.plugins.annotation.annotations);
-                }
-
-                // Register chart instance with global registry
+                // Register chart instance with global registry INCLUDING date
                 if (window.chartRegistry) {
-                    window.chartRegistry.registerChart(chartElement, chart);
+                    window.chartRegistry.registerChart(chartElement, chart, role, date);
                 }
 
+                // Add hour labels
                 chart.canvas.parentElement.style.position = 'relative';
                 const labelContainer = document.createElement('div');
                 labelContainer.style.cssText = 'position: absolute; bottom: 0; left: 0; right: 0; height: 30px; pointer-events: none;';
@@ -682,6 +486,7 @@
                 chart.canvas.parentElement.appendChild(labelContainer);
 
                 function updateHourLabels() {
+                    if (!document.body.contains(labelContainer)) return;
                     labelContainer.innerHTML = '';
 
                     const chartArea = chart.chartArea;
@@ -703,7 +508,7 @@
 
                                 const label = document.createElement('div');
                                 label.textContent = hour.toString();
-                                label.style.cssText = `position: absolute; left: ${leftEdge}px; bottom: 5px; color: white; font-size: ${isMobile ? '12px' : '12px'}; font-family: Arial, sans-serif; pointer-events: none; white-space: nowrap;`;
+                                label.style.cssText = `position: absolute; left: ${leftEdge}px; bottom: 5px; color: white; font-size: 12px; font-family: Arial, sans-serif; pointer-events: none; white-space: nowrap;`;
                                 labelContainer.appendChild(label);
                             } catch (e) {
                                 console.warn('Error positioning hour label:', e);
@@ -721,185 +526,48 @@
                     setTimeout(updateHourLabels, 100);
                 };
 
-                // Store chart instance and metadata
+                // Store chart instance and metadata on canvas (for compatibility)
                 chartElement._chartInstance = chart;
-                chartElement._validData = validData;
-                chartElement._granularity = data.granularity || 'quarter_hour';
-                chartElement._originalPriceRange = {
-                    minPrice: minPrice,
-                    maxPrice: maxPrice
-                };
-                chartElement._tooltips = tooltips;
+                chartElement._chartDate = date;  // Store the date this chart was created for
+                chartElement._chartRole = role;
 
                 // Set up now line timer for today's chart
                 if (role === 'today') {
-                    startNowLineTimer(chart, chartElement, validData, chartElement._granularity);
+                    setupNowLineTimer(role, date);
                     if (window.updateCurrentPrice) {
                         window.updateCurrentPrice();
                     }
                 }
 
-                // Handle window resize
-                let resizeTimer = null;
-                const resizeHandler = () => {
-                    if (resizeTimer) {
-                        clearTimeout(resizeTimer);
-                    }
-                    resizeTimer = setTimeout(() => {
-                        if (chartElement._chartInstance && document.body.contains(chartElement)) {
-                            try {
-                                chartElement._chartInstance.resize();
-                            } catch (e) {
-                                console.warn('Error resizing chart:', e);
-                            }
-                        }
-                        resizeTimer = null;
-                    }, 250);
-                };
-                if (window.chartRegistry) {
-                    window.chartRegistry.trackEventListener(window, 'resize', resizeHandler);
-                } else {
-                    window.addEventListener('resize', resizeHandler);
-                }
-                chartElement._resizeHandler = resizeHandler;
-
-                // Handle visibility change (screen re-enablement)
-                const visibilityResizeHandler = () => {
-                    if (!document.hidden && chartElement._chartInstance && document.body.contains(chartElement)) {
-                        // Screen was re-enabled, force resize after DOM is ready
-                        // Use requestAnimationFrame to ensure layout is complete
-                        requestAnimationFrame(() => {
-                            setTimeout(() => {
-                                if (chartElement._chartInstance && document.body.contains(chartElement)) {
-                                    try {
-                                        const chart = chartElement._chartInstance;
-                                        // Force Chart.js to recalculate canvas size
-                                        chart.resize();
-                                        // Update without animation to refresh display
-                                        chart.update('none');
-                                    } catch (e) {
-                                        console.warn('Error handling visibility change:', e);
-                                    }
-                                }
-                            }, 100);
-                        });
-                    }
-                };
-                if (window.chartRegistry) {
-                    window.chartRegistry.trackEventListener(document, 'visibilitychange', visibilityResizeHandler);
-                } else {
-                    document.addEventListener('visibilitychange', visibilityResizeHandler);
-                }
-                chartElement._visibilityResizeHandler = visibilityResizeHandler;
-
-                // Handle window focus (screen re-enablement)
-                const focusResizeHandler = () => {
-                    if (!document.body.contains(chartElement)) return;
-                    requestAnimationFrame(() => {
-                        setTimeout(() => {
-                            if (chartElement._chartInstance && document.body.contains(chartElement)) {
-                                try {
-                                    const chart = chartElement._chartInstance;
-                                    chart.resize();
-                                    chart.update('none');
-                                } catch (e) {
-                                    console.warn('Error handling focus:', e);
-                                }
-                            }
-                        }, 100);
-                    });
-                };
-                if (window.chartRegistry) {
-                    window.chartRegistry.trackEventListener(window, 'focus', focusResizeHandler);
-                } else {
-                    window.addEventListener('focus', focusResizeHandler);
-                }
-                chartElement._focusResizeHandler = focusResizeHandler;
-
-                console.log('Chart created successfully');
+                console.log('Chart created successfully for', role, 'date:', date, 'dataPoints:', validData.length);
             })
             .catch(error => {
                 console.error('Error fetching chart data:', error);
-                chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px;">Error loading chart data</div>';
+                if (document.body.contains(chartElement)) {
+                    chartElement.parentElement.innerHTML = '<div style="color: white; padding: 20px;">Error loading chart data</div>';
+                }
             });
 
-        function startNowLineTimer(chart, chartElement, validData, granularity) {
-            // Clear existing timer
-            if (chartElement._nowLineTimer) {
-                if (window.chartRegistry) {
-                    window.chartRegistry.clearTimer(chartElement._nowLineTimer);
-                } else {
-                    clearInterval(chartElement._nowLineTimer);
-                    clearTimeout(chartElement._nowLineTimer);
-                }
-                chartElement._nowLineTimer = null;
-            }
-
-            function updateNowLine() {
+        // Now line timer that uses global data store (not closures)
+        function setupNowLineTimer(role, chartDate) {
+            function updateNowLineFromStore() {
                 if (document.hidden) return;
-                if (!chartElement._chartInstance) return;
-                if (!document.body.contains(chartElement)) return;
-
-                // Validate chart instance is still valid
-                try {
-                    if (!chartElement._chartInstance.canvas || !chartElement._chartInstance.options) return;
-                    if (!chartElement._chartInstance.options.plugins || !chartElement._chartInstance.options.plugins.annotation) return;
-                } catch (e) {
-                    console.warn('Chart instance invalid, stopping now line timer:', e);
-                    if (chartElement._nowLineTimer) {
-                        if (window.chartRegistry) {
-                            window.chartRegistry.clearTimer(chartElement._nowLineTimer);
-                        } else {
-                            clearInterval(chartElement._nowLineTimer);
-                            clearTimeout(chartElement._nowLineTimer);
-                        }
-                        chartElement._nowLineTimer = null;
-                    }
+                
+                // Get current expected date
+                const expectedDate = window.getHelsinkiDate ? window.getHelsinkiDate(0) : null;
+                
+                // If date has changed, don't update - let the refresh handle it
+                if (expectedDate && chartDate !== expectedDate) {
+                    console.log('Now line timer: date changed, skipping update');
                     return;
                 }
-
-                const now = new Date();
-                const currentHour = now.getHours();
-                const currentMinutes = now.getMinutes();
-                let dataPointIndex = -1;
-
-                if (granularity === 'quarter_hour') {
-                    const quarter = Math.floor(currentMinutes / 15);
-                    const intervalIndex = currentHour * 4 + quarter;
-                    dataPointIndex = validData.findIndex(row => row[0] === intervalIndex.toString());
-                } else {
-                    dataPointIndex = validData.findIndex(row => row[0] === currentHour.toString());
-                }
-
-                if (dataPointIndex >= 0) {
-                    try {
-                        const annotations = chartElement._chartInstance.options.plugins.annotation.annotations;
-                        // Remove existing now line
-                        if (annotations.nowline) {
-                            delete annotations.nowline;
-                        }
-                        // Add new now line
-                        annotations.nowline = {
-                            type: 'line',
-                            xMin: dataPointIndex,
-                            xMax: dataPointIndex,
-                            yMin: chartElement._originalPriceRange.minPrice,
-                            yMax: chartElement._originalPriceRange.maxPrice,
-                            borderColor: 'rgba(255, 153, 0, 0.9)',
-                            borderWidth: 3,
-                            borderDash: [4, 3],
-                            drawTime: 'afterDatasetsDraw',
-                            xScaleID: 'x',
-                            yScaleID: 'y'
-                        };
-                        chartElement._chartInstance.update('none');
-                    } catch (e) {
-                        console.warn('Error updating now line:', e);
-                    }
+                
+                // Use global updateNowLine which reads from data store
+                if (window.updateNowLine) {
+                    window.updateNowLine();
                 }
             }
 
-            // Calculate ms until next 15-minute boundary
             function msUntilNext15Min() {
                 const now = new Date();
                 const minutes = now.getMinutes();
@@ -913,65 +581,18 @@
             function scheduleNext() {
                 const ms = msUntilNext15Min();
                 const timeoutId = setTimeout(() => {
-                    updateNowLine();
-                    const intervalId = setInterval(updateNowLine, 15 * 60 * 1000);
+                    updateNowLineFromStore();
+                    const intervalId = setInterval(updateNowLineFromStore, 15 * 60 * 1000);
                     if (window.chartRegistry) {
-                        window.chartRegistry.trackTimer(intervalId);
+                        window.chartRegistry.trackTimer(intervalId, role, 'now-line-interval');
                     }
-                    chartElement._nowLineTimer = intervalId;
                 }, ms);
                 if (window.chartRegistry) {
-                    window.chartRegistry.trackTimer(timeoutId);
+                    window.chartRegistry.trackTimer(timeoutId, role, 'now-line-timeout');
                 }
-                chartElement._nowLineTimer = timeoutId;
             }
 
             scheduleNext();
-
-            const visibilityHandler = () => {
-                if (!document.hidden && document.body.contains(chartElement)) {
-                    updateNowLine();
-                    if (chartElement._nowLineTimer) {
-                        if (window.chartRegistry) {
-                            window.chartRegistry.clearTimer(chartElement._nowLineTimer);
-                        } else {
-                            clearInterval(chartElement._nowLineTimer);
-                            clearTimeout(chartElement._nowLineTimer);
-                        }
-                        chartElement._nowLineTimer = null;
-                    }
-                    scheduleNext();
-                }
-            };
-
-            chartElement._visibilityHandler = visibilityHandler;
-            if (window.chartRegistry) {
-                window.chartRegistry.trackEventListener(document, 'visibilitychange', visibilityHandler);
-            } else {
-                document.addEventListener('visibilitychange', visibilityHandler);
-            }
-
-            const focusHandler = () => {
-                if (!document.body.contains(chartElement)) return;
-                updateNowLine();
-                if (chartElement._nowLineTimer) {
-                    if (window.chartRegistry) {
-                        window.chartRegistry.clearTimer(chartElement._nowLineTimer);
-                    } else {
-                        clearInterval(chartElement._nowLineTimer);
-                        clearTimeout(chartElement._nowLineTimer);
-                    }
-                    chartElement._nowLineTimer = null;
-                }
-                scheduleNext();
-            };
-
-            chartElement._focusHandler = focusHandler;
-            if (window.chartRegistry) {
-                window.chartRegistry.trackEventListener(window, 'focus', focusHandler);
-            } else {
-                window.addEventListener('focus', focusHandler);
-            }
         }
     };
 
