@@ -47,14 +47,122 @@ body {
     flex: 1;
 }
 
+.dog-icon-wrapper {
+    position: relative;
+    display: inline-block;
+    margin-right: 8px;
+}
+
 .header-left h1 .header-icon,
 .header-left .header-icon {
     height: 4em !important;
     width: auto !important;
-    margin-right: 8px;
     margin-bottom: 30px;
     filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.4))
         drop-shadow(0 0 16px rgba(255, 255, 255, 0.3));
+    cursor: pointer;
+    transition: transform 0.1s ease;
+}
+
+.header-left h1 .header-icon:active {
+    transform: scale(0.95);
+}
+
+/* Fart effect animation */
+.fart-effect {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.fart-effect::before,
+.fart-effect::after {
+    content: '';
+    position: absolute;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(139, 69, 19, 0.8) 0%, rgba(101, 67, 33, 0.6) 50%, transparent 100%);
+}
+
+.fart-effect::before {
+    width: 30px;
+    height: 20px;
+    left: -15px;
+    bottom: 0;
+}
+
+.fart-effect::after {
+    width: 25px;
+    height: 15px;
+    left: 5px;
+    bottom: -5px;
+}
+
+.dog-icon-wrapper.fart-animate .fart-effect {
+    animation: fartPuff 1.2s ease-out;
+}
+
+.dog-icon-wrapper.fart-animate .fart-effect::before {
+    animation: fartPuff1 1.2s ease-out;
+}
+
+.dog-icon-wrapper.fart-animate .fart-effect::after {
+    animation: fartPuff2 1.2s ease-out;
+}
+
+@keyframes fartPuff {
+    0% {
+        opacity: 0;
+        transform: translateX(-50%) translateY(0) scale(0.5);
+    }
+    15% {
+        opacity: 1;
+    }
+    80% {
+        opacity: 0.7;
+    }
+    100% {
+        opacity: 0;
+        transform: translateX(-50%) translateY(-40px) scale(1.8);
+    }
+}
+
+@keyframes fartPuff1 {
+    0% {
+        transform: translate(0, 0) scale(0.5);
+        opacity: 0;
+    }
+    15% {
+        opacity: 1;
+    }
+    80% {
+        opacity: 0.6;
+    }
+    100% {
+        transform: translate(-15px, -35px) scale(1.4);
+        opacity: 0;
+    }
+}
+
+@keyframes fartPuff2 {
+    0% {
+        transform: translate(0, 0) scale(0.5);
+        opacity: 0;
+    }
+    15% {
+        opacity: 1;
+    }
+    80% {
+        opacity: 0.6;
+    }
+    100% {
+        transform: translate(20px, -30px) scale(1.3);
+        opacity: 0;
+    }
 }
 
 .current-price {
@@ -296,10 +404,27 @@ body {
         flex: 1 1 100%;
         width: 100%;
     }
+    .header-left h1 .dog-icon-wrapper {
+        margin-right: 4px;
+    }
     .header-left h1 .header-icon,
     .header-left .header-icon {
         height: 2em !important; /* 50% of base 4em size */
         margin-bottom: 15px; /* Reduced margin to match smaller size */
+    }
+    .header-left h1 .fart-effect {
+        bottom: 10px;
+    }
+    .header-left h1 .fart-effect::before {
+        width: 15px;
+        height: 10px;
+        left: -7px;
+    }
+    .header-left h1 .fart-effect::after {
+        width: 12px;
+        height: 8px;
+        left: 3px;
+        bottom: -3px;
     }
     .header-left h1 {
         font-size: 18px;
@@ -378,10 +503,27 @@ body {
         flex: 1;
         min-width: 0;
     }
+    .header-left h1 .dog-icon-wrapper {
+        margin-right: 4px;
+    }
     .header-left h1 .header-icon,
     .header-left .header-icon {
         height: 2em !important; /* 50% of base 4em size */
         margin-bottom: 15px; /* Reduced margin to match smaller size */
+    }
+    .header-left h1 .fart-effect {
+        bottom: 10px;
+    }
+    .header-left h1 .fart-effect::before {
+        width: 15px;
+        height: 10px;
+        left: -7px;
+    }
+    .header-left h1 .fart-effect::after {
+        width: 12px;
+        height: 8px;
+        left: 3px;
+        bottom: -3px;
     }
     .header-left h1 {
         font-size: 18px;

@@ -1275,7 +1275,8 @@
     // ============================================================================
 
     const dogIcon = d.querySelector('.header-icon');
-    if (dogIcon) {
+    const dogIconWrapper = d.querySelector('.dog-icon-wrapper');
+    if (dogIcon && dogIconWrapper) {
         // Create audio element for fart sound
         const fartSound = new Audio('/static/fart.mp3');
         fartSound.preload = 'auto';
@@ -1286,6 +1287,12 @@
             fartSound.play().catch(err => {
                 console.warn('Error playing fart sound:', err);
             });
+            
+            // Trigger fart animation
+            dogIconWrapper.classList.remove('fart-animate');
+            // Force reflow to restart animation
+            void dogIconWrapper.offsetWidth;
+            dogIconWrapper.classList.add('fart-animate');
         });
     }
 
