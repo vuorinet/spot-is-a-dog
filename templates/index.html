@@ -100,10 +100,46 @@
     </main>
 
     <div id="toast" class="toast hidden">
-        <span>New version available</span>
-        <button id="reloadNow">Reload now</button>
+        <span>🔄 New version available!</span>
+        <button id="reloadNow">Reload Now</button>
         <span id="countdown"></span>
     </div>
+
+    <!-- Version indicator (tap to check for updates) -->
+    <div id="version-indicator" class="version-indicator" title="Tap to check for updates">
+        v{{ app_version }}
+    </div>
+
+    <script>
+        // Version indicator: tap to manually check for updates
+        document.getElementById('version-indicator').addEventListener('click', function() {
+            this.textContent = 'Checking...';
+            this.style.background = '#333';
+            fetch('/version', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(data => {
+                    const current = document.body.getAttribute('data-app-version');
+                    if (data.version !== current) {
+                        this.textContent = 'Update: ' + data.version;
+                        this.style.background = '#e94560';
+                        // Show toast
+                        document.getElementById('toast').classList.remove('hidden');
+                    } else {
+                        this.textContent = 'v' + current + ' ✓';
+                        this.style.background = '#2ecc71';
+                        setTimeout(() => {
+                            this.textContent = 'v' + current;
+                            this.style.background = '';
+                        }, 2000);
+                    }
+                })
+                .catch(() => {
+                    this.textContent = 'v{{ app_version }}';
+                    this.style.background = '#e74c3c';
+                    setTimeout(() => { this.style.background = ''; }, 2000);
+                });
+        });
+    </script>
 </body>
 
 </html>

@@ -183,16 +183,96 @@ body {
 }
 .toast {
     position: fixed;
-    bottom: 16px;
-    right: 16px;
-    background: #111;
-    color: #eee;
-    padding: 8px 12px;
-    border-radius: 6px;
-    border: 1px solid #333;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: #fff;
+    padding: 24px 32px;
+    border-radius: 16px;
+    border: 2px solid #e94560;
+    box-shadow: 0 8px 32px rgba(233, 69, 96, 0.4), 0 0 0 4px rgba(233, 69, 96, 0.1);
+    z-index: 10000;
+    text-align: center;
+    min-width: 280px;
+    max-width: 90vw;
+    animation: toast-pulse 2s ease-in-out infinite;
 }
+
+.toast span:first-child {
+    display: block;
+    font-size: 1.2em;
+    font-weight: bold;
+    margin-bottom: 16px;
+    color: #e94560;
+}
+
+.toast #reloadNow {
+    display: block;
+    width: 100%;
+    padding: 14px 24px;
+    margin: 12px 0;
+    background: #e94560;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 1.1em;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.toast #reloadNow:hover {
+    background: #ff6b6b;
+}
+
+.toast #reloadNow:active {
+    transform: scale(0.98);
+}
+
+.toast #countdown {
+    display: block;
+    font-size: 0.9em;
+    color: #aaa;
+    margin-top: 8px;
+}
+
+@keyframes toast-pulse {
+    0%, 100% {
+        box-shadow: 0 8px 32px rgba(233, 69, 96, 0.4), 0 0 0 4px rgba(233, 69, 96, 0.1);
+    }
+    50% {
+        box-shadow: 0 8px 48px rgba(233, 69, 96, 0.6), 0 0 0 8px rgba(233, 69, 96, 0.2);
+    }
+}
+
 .hidden {
-    display: none;
+    display: none !important;
+}
+
+/* Version indicator - bottom right corner */
+.version-indicator {
+    position: fixed;
+    bottom: 8px;
+    right: 8px;
+    background: rgba(30, 30, 30, 0.9);
+    color: #888;
+    padding: 6px 12px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-family: monospace;
+    cursor: pointer;
+    z-index: 1000;
+    transition: all 0.3s ease;
+    border: 1px solid #333;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.version-indicator:hover,
+.version-indicator:active {
+    background: #333;
+    color: #fff;
 }
 
 /* Mobile and Tablet Responsive Design */

@@ -929,60 +929,241 @@
     window.chartRegistry.trackEventListener(document, 'visibilitychange', visibilityChangeHandler);
 
     // ============================================================================
-    // SSE EVENT HANDLING
+    // VERSION CHECKING AND AUTO-RELOAD
     // ============================================================================
 
     let sseEventSource = null;
+    let sseReconnectAttempts = 0;
+    let sseReconnectTimer = null;
+    let versionCheckTimer = null;
+    let lastVersionCheck = 0;
+    const VERSION_CHECK_INTERVAL = 60000; // Check every 60 seconds as fallback
+    const SSE_MAX_RECONNECT_DELAY = 30000; // Max 30 seconds between SSE reconnect attempts
 
-    function setupSSE() {
-        if (sseEventSource) {
-            window.chartRegistry.closeSSE(sseEventSource);
+    /**
+     * Check version via fetch API (more reliable than SSE on mobile)
+     */
+    async function checkVersionViaFetch() {
+        const now = Date.now();
+        // Debounce: don't check more than once every 5 seconds
+        if (now - lastVersionCheck < 5000) {
+            return;
         }
+        lastVersionCheck = now;
 
-        sseEventSource = new EventSource('/events/version');
-        window.chartRegistry.trackSSE(sseEventSource);
-
-        sseEventSource.addEventListener('day_updated', function (event) {
-            try {
-                const data = JSON.parse(event.data);
-                console.log('Day update event received:', data);
-
-                const updatedDate = data.date;
-                const todayDate = window.getHelsinkiDate(0);
-                const tomorrowDate = window.getHelsinkiDate(1);
-
-                if (updatedDate === todayDate) {
-                    window.chartDataStore.clear('today');
-                    refreshChart('today');
-                } else if (updatedDate === tomorrowDate) {
-                    window.chartDataStore.clear('tomorrow');
-                    refreshChart('tomorrow');
-                    stopAfternoonPolling();
-                }
-            } catch (e) {
-                console.error('Error parsing day_updated event:', e);
+        try {
+            const response = await fetch('/version', {
+                cache: 'no-store',
+                headers: { 'Cache-Control': 'no-cache' }
+            });
+            if (!response.ok) {
+                console.warn('Version check failed:', response.status);
+                return;
             }
-        });
+            const data = await response.json();
+            const currentVersion = d.body.getAttribute('data-app-version');
+            console.log('Version check:', data.version, '(current:', currentVersion + ')');
 
-        sseEventSource.addEventListener('version_update', function (event) {
-            try {
-                const data = JSON.parse(event.data);
-                const currentVersion = d.body.getAttribute('data-app-version');
-                if (data.version && data.version !== currentVersion) {
-                    console.log('New version available:', data.version);
-                    showUpdateToast();
-                }
-            } catch (e) {
-                console.error('Error parsing version_update event:', e);
+            if (data.version && data.version !== currentVersion) {
+                console.log('New version detected via fetch:', data.version);
+                showUpdateToast();
             }
-        });
-
-        sseEventSource.onerror = function () {
-            console.log('SSE connection error, will reconnect automatically');
-        };
+        } catch (e) {
+            console.warn('Version check error:', e.message);
+        }
     }
 
+    /**
+     * Handle version update from SSE or fetch
+     */
+    function handleVersionUpdate(serverVersion) {
+        const currentVersion = d.body.getAttribute('data-app-version');
+        console.log('Version update:', serverVersion, '(current:', currentVersion + ')');
+
+        if (serverVersion && serverVersion !== currentVersion) {
+            console.log('New version available:', serverVersion);
+            showUpdateToast();
+        }
+    }
+
+    /**
+     * Setup SSE connection with robust reconnection logic
+     */
+    function setupSSE() {
+        // Clean up existing connection
+        if (sseEventSource) {
+            try {
+                sseEventSource.close();
+            } catch (e) { /* ignore */ }
+            window.chartRegistry.closeSSE(sseEventSource);
+            sseEventSource = null;
+        }
+
+        // Clear any pending reconnect timer
+        if (sseReconnectTimer) {
+            clearTimeout(sseReconnectTimer);
+            sseReconnectTimer = null;
+        }
+
+        console.log('Establishing SSE connection...');
+
+        try {
+            sseEventSource = new EventSource('/events/version');
+            window.chartRegistry.trackSSE(sseEventSource);
+
+            sseEventSource.onopen = function () {
+                console.log('SSE connection opened');
+                sseReconnectAttempts = 0; // Reset on successful connection
+            };
+
+            sseEventSource.addEventListener('day_updated', function (event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('Day update event received:', data);
+
+                    const updatedDate = data.date;
+                    const todayDate = window.getHelsinkiDate(0);
+                    const tomorrowDate = window.getHelsinkiDate(1);
+
+                    if (updatedDate === todayDate) {
+                        window.chartDataStore.clear('today');
+                        refreshChart('today');
+                    } else if (updatedDate === tomorrowDate) {
+                        window.chartDataStore.clear('tomorrow');
+                        refreshChart('tomorrow');
+                        stopAfternoonPolling();
+                    }
+                } catch (e) {
+                    console.error('Error parsing day_updated event:', e);
+                }
+            });
+
+            sseEventSource.addEventListener('version_update', function (event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleVersionUpdate(data.version);
+                } catch (e) {
+                    console.error('Error parsing version_update event:', e);
+                }
+            });
+
+            sseEventSource.onerror = function (event) {
+                console.log('SSE connection error, readyState:', sseEventSource.readyState);
+
+                // EventSource.CLOSED = 2, means connection is closed and won't retry
+                if (sseEventSource.readyState === EventSource.CLOSED) {
+                    console.log('SSE connection closed, scheduling reconnect...');
+                    scheduleSSEReconnect();
+                }
+                // EventSource.CONNECTING = 0, means it's trying to reconnect automatically
+                // We'll let it try, but also schedule our own reconnect as backup
+                else if (sseEventSource.readyState === EventSource.CONNECTING) {
+                    // Give EventSource 10 seconds to reconnect, then take over
+                    if (!sseReconnectTimer) {
+                        sseReconnectTimer = setTimeout(() => {
+                            if (sseEventSource && sseEventSource.readyState !== EventSource.OPEN) {
+                                console.log('EventSource auto-reconnect taking too long, forcing reconnect');
+                                setupSSE();
+                            }
+                        }, 10000);
+                    }
+                }
+            };
+        } catch (e) {
+            console.error('Failed to create EventSource:', e);
+            scheduleSSEReconnect();
+        }
+    }
+
+    /**
+     * Schedule SSE reconnection with exponential backoff
+     */
+    function scheduleSSEReconnect() {
+        if (sseReconnectTimer) {
+            return; // Already scheduled
+        }
+
+        sseReconnectAttempts++;
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, max 30s
+        const delay = Math.min(1000 * Math.pow(2, sseReconnectAttempts - 1), SSE_MAX_RECONNECT_DELAY);
+
+        console.log(`Scheduling SSE reconnect in ${delay}ms (attempt ${sseReconnectAttempts})`);
+
+        sseReconnectTimer = setTimeout(() => {
+            sseReconnectTimer = null;
+            // Check version via fetch before reconnecting (in case server restarted)
+            checkVersionViaFetch().then(() => {
+                setupSSE();
+            });
+        }, delay);
+    }
+
+    /**
+     * Start periodic version checking as fallback
+     */
+    function startVersionPolling() {
+        if (versionCheckTimer) {
+            clearInterval(versionCheckTimer);
+        }
+
+        // Check version periodically as fallback
+        versionCheckTimer = setInterval(() => {
+            // Only poll if SSE is not connected
+            if (!sseEventSource || sseEventSource.readyState !== EventSource.OPEN) {
+                console.log('SSE not connected, checking version via polling');
+                checkVersionViaFetch();
+            }
+        }, VERSION_CHECK_INTERVAL);
+
+        window.chartRegistry.trackTimer(versionCheckTimer);
+    }
+
+    // Initialize SSE and polling
     setupSSE();
+    startVersionPolling();
+
+    // Immediately check version on page load (in case SSE is slow to connect)
+    // Use a small delay to let the page render first
+    setTimeout(() => {
+        console.log('Initial version check on page load');
+        checkVersionViaFetch();
+    }, 1000);
+
+    // Check version when page becomes visible (critical for mobile!)
+    window.chartRegistry.trackEventListener(document, 'visibilitychange', function () {
+        if (!document.hidden) {
+            console.log('Page became visible, checking version...');
+            checkVersionViaFetch();
+
+            // Also ensure SSE is connected
+            if (!sseEventSource || sseEventSource.readyState !== EventSource.OPEN) {
+                console.log('SSE not connected after visibility change, reconnecting...');
+                setupSSE();
+            }
+        }
+    });
+
+    // Check version when window regains focus
+    window.chartRegistry.trackEventListener(window, 'focus', function () {
+        console.log('Window focused, checking version...');
+        checkVersionViaFetch();
+    });
+
+    // Check version when coming back from sleep/background (pageshow event)
+    window.chartRegistry.trackEventListener(window, 'pageshow', function (event) {
+        if (event.persisted) {
+            console.log('Page restored from bfcache, checking version...');
+            checkVersionViaFetch();
+            setupSSE(); // Reconnect SSE
+        }
+    });
+
+    // Check version when network comes back online
+    window.chartRegistry.trackEventListener(window, 'online', function () {
+        console.log('Network online, checking version and reconnecting SSE...');
+        checkVersionViaFetch();
+        setupSSE();
+    });
 
     // ============================================================================
     // UPDATE TOAST
