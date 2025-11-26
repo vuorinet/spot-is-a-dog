@@ -627,7 +627,15 @@
                         return;
                     }
 
+                    // Check if mobile vertical mode (mobile width AND portrait orientation)
+                    const isMobileVertical = isMobile && window.innerHeight > window.innerWidth;
+
                     for (let hour = 0; hour < 24; hour++) {
+                        // On mobile vertical mode, only show every 2nd hour (0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22)
+                        if (isMobileVertical && hour % 2 !== 0) {
+                            continue;
+                        }
+
                         const dataPointIndex = hour * 4;
                         if (dataPointIndex < labels.length) {
                             try {
