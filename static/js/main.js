@@ -1175,6 +1175,12 @@
         const toast = d.getElementById('toast');
         if (!isElementValid(toast)) return;
 
+        // If toast is already visible and countdown is running, don't reset it
+        if (!toast.classList.contains('hidden') && toastCountdownTimer) {
+            console.log('Toast already showing, not resetting countdown');
+            return;
+        }
+
         toast.classList.remove('hidden');
 
         const reloadBtn = d.getElementById('reloadNow');
@@ -1182,8 +1188,10 @@
             reloadBtn.onclick = () => location.reload();
         }
 
+        // Clear any existing timer before starting a new one
         if (toastCountdownTimer) {
             window.chartRegistry.clearTimer(toastCountdownTimer);
+            toastCountdownTimer = null;
         }
 
         let countdown = 30;
@@ -1197,6 +1205,7 @@
                 if (countdown <= 0) {
                     window.chartRegistry.clearTimer(toastCountdownTimer);
                     toastCountdownTimer = null;
+                    console.log('Countdown reached 0, reloading page...');
                     location.reload();
                 }
             }, 1000),
