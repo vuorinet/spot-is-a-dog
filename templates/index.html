@@ -112,7 +112,7 @@
 
     <script>
         // Version indicator: tap to manually check for updates
-        document.getElementById('version-indicator').addEventListener('click', function() {
+        document.getElementById('version-indicator').addEventListener('click', function () {
             this.textContent = 'Checking...';
             this.style.background = '#333';
             fetch('/version', { cache: 'no-store' })

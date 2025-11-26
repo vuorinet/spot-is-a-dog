@@ -250,6 +250,17 @@
                     marginData.push(marginPrice !== 0 ? marginPrice : null);
                 });
 
+                // Add extra label and data point at the end for 0:00 (hour 24)
+                // Copy the last bar's data (23:45) to show at 0:00 position with half-width
+                // This extends the chart to the correct width so the end grid line is visible
+                const lastIndex = validData.length - 1;
+                labels.push('96'); // Index for 0:00 (96 = 24 hours * 4 quarters)
+                // Copy last bar's data for the half-width bar at 0:00
+                lowData.push(lastIndex >= 0 ? lowData[lastIndex] : null);
+                medData.push(lastIndex >= 0 ? medData[lastIndex] : null);
+                highData.push(lastIndex >= 0 ? highData[lastIndex] : null);
+                marginData.push(lastIndex >= 0 ? marginData[lastIndex] : null);
+
                 // Responsive settings
                 const isMobile = window.innerWidth <= 900;
                 const isTablet = window.innerWidth > 900 && window.innerWidth <= 1200;
@@ -258,23 +269,44 @@
                 const annotations = {};
 
                 // Add hourly vertical lines
+                // Every 3rd hour (0, 3, 6, 9, 12, 15, 18, 21) is bolder for easier navigation
                 const hourStep = 4;
                 for (let hour = 0; hour < 24; hour++) {
                     const dataPointIndex = hour * hourStep;
                     if (dataPointIndex < validData.length) {
+                        const isMajorHour = hour % 3 === 0;
                         annotations[`vline_${hour}`] = {
                             type: 'line',
                             xMin: dataPointIndex,
                             xMax: dataPointIndex,
                             yMin: minPrice,
                             yMax: maxPrice,
-                            borderColor: 'rgba(255, 255, 255, 0.2)',
-                            borderWidth: 1,
+                            borderColor: isMajorHour ? 'rgba(255, 255, 255, 0.4)' : 'rgba(255, 255, 255, 0.2)',
+                            borderWidth: isMajorHour ? 2 : 1,
                             drawTime: 'beforeDatasetsDraw',
                             xScaleID: 'x',
                             yScaleID: 'y'
                         };
                     }
+                }
+                
+                // Add grid line at the end of the day (0:00 / hour 24)
+                // The x-axis is extended with afterBuildTicks to include index 96
+                const endOfDayIndex = validData.length;
+                if (endOfDayIndex > 0) {
+                    // Hour 24 (0:00 next day) is a major hour (24 % 3 === 0)
+                    annotations['vline_24'] = {
+                        type: 'line',
+                        xMin: endOfDayIndex,
+                        xMax: endOfDayIndex,
+                        yMin: minPrice,
+                        yMax: maxPrice,
+                        borderColor: 'rgba(255, 255, 255, 0.4)',
+                        borderWidth: 2,
+                        drawTime: 'beforeDatasetsDraw',
+                        xScaleID: 'x',
+                        yScaleID: 'y'
+                    };
                 }
 
                 // Add horizontal gridlines (every 1 cent, major every 5)
@@ -348,6 +380,29 @@
                                 clip: false
                             }
                         },
+                        // Hook to make the last bar (0:00) half-width
+                        afterUpdate: function(chart) {
+                            // Make the last bar half-width to match tomorrow's first bar
+                            chart.data.datasets.forEach((dataset, datasetIndex) => {
+                                const meta = chart.getDatasetMeta(datasetIndex);
+                                const lastIndex = meta.data.length - 1;
+                                if (lastIndex >= 0 && meta.data[lastIndex]) {
+                                    const lastBar = meta.data[lastIndex];
+                                    // Calculate half-width based on category width
+                                    const xScale = chart.scales.x;
+                                    const categoryWidth = xScale.width / (xScale.max - xScale.min + 1);
+                                    const barPercentage = (window.innerWidth <= 900 || (window.innerWidth > 900 && window.innerWidth <= 1200)) ? 0.95 : 0.90;
+                                    const fullBarWidth = categoryWidth * barPercentage;
+                                    const halfBarWidth = fullBarWidth / 2;
+                                    
+                                    // Adjust the bar width and position
+                                    lastBar.width = halfBarWidth;
+                                    // Position it at the left edge of the category (centered would be x, but we want it left-aligned for half-width)
+                                    const categoryCenter = xScale.getPixelForValue(lastIndex);
+                                    lastBar.x = categoryCenter - fullBarWidth / 4;
+                                }
+                            });
+                        },
                         scales: {
                             x: {
                                 id: 'x',
@@ -355,11 +410,17 @@
                                 display: true,
                                 barPercentage: (isMobile || isTablet) ? 0.95 : 0.90,
                                 categoryPercentage: 1.0,
+                                offset: false,
                                 ticks: {
                                     color: 'transparent',
                                     font: { size: isMobile ? 10 : (isTablet ? 14 : 12) },
-                                    callback: function (value, index) {
-                                        if (index % 4 === 0) return Math.floor(index / 4).toString();
+                                    callback: function (value, index, ticks) {
+                                        // Show hour labels every 4 intervals (every hour)
+                                        if (index % 4 === 0) {
+                                            const hour = Math.floor(index / 4);
+                                            // Show "0" for hour 24 (0:00 next day) at the end
+                                            return hour === 24 ? '0' : hour.toString();
+                                        }
                                         return '';
                                     },
                                     maxRotation: 0,
@@ -462,6 +523,76 @@
                     console.error('Chart element no longer in DOM, aborting chart creation');
                     return;
                 }
+
+                // Register plugin to make last bar half-width
+                const halfWidthLastBarPlugin = {
+                    id: 'halfWidthLastBar',
+                    beforeDatasetsDraw: function(chart) {
+                        // Hide the last bar by making it transparent temporarily
+                        const lastIndex = chart.data.labels.length - 1;
+                        if (lastIndex >= 0) {
+                            chart.data.datasets.forEach((dataset, datasetIndex) => {
+                                const meta = chart.getDatasetMeta(datasetIndex);
+                                if (meta.data[lastIndex]) {
+                                    meta.data[lastIndex].hidden = true;
+                                }
+                            });
+                        }
+                    },
+                    afterDatasetsDraw: function(chart) {
+                        const ctx = chart.ctx;
+                        const lastIndex = chart.data.labels.length - 1;
+                        if (lastIndex < 0) return;
+                        
+                        const xScale = chart.scales.x;
+                        const yScale = chart.scales.y;
+                        const categoryWidth = xScale.width / (xScale.max - xScale.min + 1);
+                        const barPercentage = (window.innerWidth <= 900 || (window.innerWidth > 900 && window.innerWidth <= 1200)) ? 0.95 : 0.90;
+                        const fullBarWidth = categoryWidth * barPercentage;
+                        const halfBarWidth = fullBarWidth / 2;
+                        const categoryCenter = xScale.getPixelForValue(lastIndex);
+                        const halfBarX = categoryCenter - fullBarWidth / 4;
+                        
+                        // Calculate total stacked value
+                        let totalValue = 0;
+                        chart.data.datasets.forEach((dataset) => {
+                            const value = dataset.data[lastIndex];
+                            if (value !== null && value !== undefined) {
+                                totalValue += value;
+                            }
+                        });
+                        
+                        // Draw stacked bar segments from bottom to top
+                        let currentY = yScale.getPixelForValue(0);
+                        chart.data.datasets.forEach((dataset) => {
+                            const value = dataset.data[lastIndex];
+                            if (value !== null && value !== undefined && value !== 0) {
+                                // Calculate the cumulative value up to this segment
+                                let cumulativeValue = 0;
+                                const datasetIndex = chart.data.datasets.indexOf(dataset);
+                                for (let i = 0; i <= datasetIndex; i++) {
+                                    const segValue = chart.data.datasets[i].data[lastIndex];
+                                    if (segValue !== null && segValue !== undefined) {
+                                        cumulativeValue += segValue;
+                                    }
+                                }
+                                
+                                const segmentTop = yScale.getPixelForValue(cumulativeValue);
+                                const segmentHeight = currentY - segmentTop;
+                                
+                                ctx.save();
+                                ctx.fillStyle = dataset.backgroundColor;
+                                ctx.fillRect(halfBarX, segmentTop, halfBarWidth, segmentHeight);
+                                ctx.restore();
+                                
+                                currentY = segmentTop;
+                            }
+                        });
+                    }
+                };
+                
+                // Register the plugin
+                Chart.register(halfWidthLastBarPlugin);
 
                 // Create chart
                 let chart;
