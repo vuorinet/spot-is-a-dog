@@ -1270,5 +1270,24 @@
         window.chartRegistry.cleanup();
     });
 
+    // ============================================================================
+    // DOG ICON CLICK - PLAY FART SOUND
+    // ============================================================================
+
+    const dogIcon = d.querySelector('.header-icon');
+    if (dogIcon) {
+        // Create audio element for fart sound
+        const fartSound = new Audio('/static/fart.mp3');
+        fartSound.preload = 'auto';
+
+        window.chartRegistry.trackEventListener(dogIcon, 'click', () => {
+            // Reset audio to beginning and play
+            fartSound.currentTime = 0;
+            fartSound.play().catch(err => {
+                console.warn('Error playing fart sound:', err);
+            });
+        });
+    }
+
     console.log('Spot is a Dog - Frontend initialized');
 })();
