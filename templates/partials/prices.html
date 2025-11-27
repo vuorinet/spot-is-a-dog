@@ -246,9 +246,28 @@
                     window.globalPriceRange = { minPrice: null, maxPrice: null };
                 }
                 
+                // Helper function to check if data contains any negative spot prices
+                function hasNegativeSpotPrices(dataArray) {
+                    if (!dataArray || !Array.isArray(dataArray)) return false;
+                    for (const row of dataArray) {
+                        if (Array.isArray(row) && row.length >= 5) {
+                            const [, lowPrice, mediumPrice, highPrice] = row;
+                            const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
+                            if (spotPrice < 0) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }
+                
+                // Check if current chart has negative prices
+                const currentHasNegative = hasNegativeSpotPrices(validData);
+                
                 // Get price values from API response
                 const apiMaxPrice = Math.max(15, data.maxPrice);
-                const apiMinPrice = data.minPrice;
+                // Only use negative minPrice if there are actual negative prices in the data
+                const apiMinPrice = currentHasNegative ? data.minPrice : Math.max(0, data.minPrice);
                 
                 // Recalculate global range from both charts' data to ensure consistency
                 // This ensures both charts always use the same min and max price range
@@ -258,6 +277,11 @@
                 if (window.chartDataStore) {
                     const todayData = window.chartDataStore.getData('today');
                     const tomorrowData = window.chartDataStore.getData('tomorrow');
+                    
+                    // Check if either chart has negative prices
+                    const todayHasNegative = todayData && todayData.data ? hasNegativeSpotPrices(todayData.data) : false;
+                    const tomorrowHasNegative = tomorrowData && tomorrowData.data ? hasNegativeSpotPrices(tomorrowData.data) : false;
+                    const anyHasNegative = currentHasNegative || todayHasNegative || tomorrowHasNegative;
                     
                     // Check the other chart's price range if available
                     const otherRole = role === 'today' ? 'tomorrow' : 'today';
@@ -276,6 +300,16 @@
                         if (otherMax !== null && otherMax !== undefined) {
                             globalMax = Math.max(globalMax, otherMax);
                         }
+                    }
+                    
+                    // Final check: if no negative prices exist in any chart, ensure minPrice is >= 0
+                    if (!anyHasNegative) {
+                        globalMin = Math.max(0, globalMin);
+                    }
+                } else {
+                    // If no chart data store, ensure minPrice is >= 0 if no negative prices
+                    if (!currentHasNegative) {
+                        globalMin = Math.max(0, globalMin);
                     }
                 }
                 
