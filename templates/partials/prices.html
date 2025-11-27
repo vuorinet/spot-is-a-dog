@@ -240,8 +240,52 @@
 
                 // Store data in global data store (single source of truth)
                 const granularity = data.granularity || 'quarter_hour';
-                const maxPrice = Math.max(15, data.maxPrice);
-                const minPrice = data.minPrice;
+                
+                // Initialize global price range tracker if it doesn't exist
+                if (!window.globalPriceRange) {
+                    window.globalPriceRange = { minPrice: null, maxPrice: null };
+                }
+                
+                // Get price values from API response
+                const apiMaxPrice = Math.max(15, data.maxPrice);
+                const apiMinPrice = data.minPrice;
+                
+                // Recalculate global range from both charts' data to ensure consistency
+                // This ensures both charts always use the same min and max price range
+                let globalMin = apiMinPrice;
+                let globalMax = apiMaxPrice;
+                
+                if (window.chartDataStore) {
+                    const todayData = window.chartDataStore.getData('today');
+                    const tomorrowData = window.chartDataStore.getData('tomorrow');
+                    
+                    // Check the other chart's price range if available
+                    const otherRole = role === 'today' ? 'tomorrow' : 'today';
+                    const otherData = role === 'today' ? tomorrowData : todayData;
+                    
+                    if (otherData && otherData.priceRange) {
+                        const otherMin = otherData.priceRange.minPrice;
+                        const otherMax = otherData.priceRange.maxPrice;
+                        
+                        // Use the minimum of both min prices
+                        if (otherMin !== null && otherMin !== undefined) {
+                            globalMin = Math.min(globalMin, otherMin);
+                        }
+                        
+                        // Use the maximum of both max prices (already handled by Math.max(15, ...))
+                        if (otherMax !== null && otherMax !== undefined) {
+                            globalMax = Math.max(globalMax, otherMax);
+                        }
+                    }
+                }
+                
+                // Update global range
+                window.globalPriceRange.minPrice = globalMin;
+                window.globalPriceRange.maxPrice = globalMax;
+                
+                // Use global range for consistent scaling across both charts
+                const maxPrice = window.globalPriceRange.maxPrice;
+                const minPrice = window.globalPriceRange.minPrice;
                 const priceRange = { minPrice, maxPrice };
                 
                 if (window.chartDataStore) {
