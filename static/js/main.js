@@ -404,6 +404,76 @@
     }, 5 * 60 * 1000), 'global', 'periodic-cleanup');
 
     // ============================================================================
+    // HTMX INTEGRATION - Critical for preventing orphaned Chart.js instances
+    // ============================================================================
+
+    /**
+     * Destroy Chart.js instances BEFORE HTMX swaps elements
+     * This prevents orphaned charts with stale event listeners
+     */
+    d.body.addEventListener('htmx:beforeSwap', function (evt) {
+        const target = evt.detail.target;
+        if (!target) return;
+
+        // Find all canvases in the element being swapped
+        const canvases = target.querySelectorAll ? target.querySelectorAll('canvas') : [];
+        canvases.forEach(canvas => {
+            if (canvas._chartInstance) {
+                console.log('HTMX beforeSwap: destroying chart on canvas', canvas.id);
+                try {
+                    // Unregister from our registry (which also destroys)
+                    window.chartRegistry.unregisterChart(canvas);
+                } catch (e) {
+                    console.warn('Error destroying chart before HTMX swap:', e);
+                }
+                canvas._chartInstance = null;
+            }
+            // Also clear any timers associated with this chart's role
+            const role = canvas._chartRole;
+            if (role) {
+                window.chartRegistry.clearTimersForRole(role);
+            }
+        });
+
+        // Also check if the target itself is a canvas
+        if (target.tagName === 'CANVAS' && target._chartInstance) {
+            console.log('HTMX beforeSwap: destroying chart on target canvas');
+            try {
+                window.chartRegistry.unregisterChart(target);
+            } catch (e) {
+                console.warn('Error destroying chart before HTMX swap:', e);
+            }
+            target._chartInstance = null;
+        }
+    });
+
+    /**
+     * Clean up after HTMX swap completes
+     */
+    d.body.addEventListener('htmx:afterSwap', function (evt) {
+        // Run orphan cleanup after swap
+        setTimeout(() => {
+            window.chartRegistry.cleanupOrphaned();
+        }, 100);
+    });
+
+    /**
+     * Handle HTMX errors - release locks
+     */
+    d.body.addEventListener('htmx:responseError', function (evt) {
+        console.error('HTMX response error:', evt.detail);
+        // Release any locks that might be held
+        window.refreshLock.release('today');
+        window.refreshLock.release('tomorrow');
+    });
+
+    d.body.addEventListener('htmx:sendError', function (evt) {
+        console.error('HTMX send error:', evt.detail);
+        window.refreshLock.release('today');
+        window.refreshLock.release('tomorrow');
+    });
+
+    // ============================================================================
     // UTILITY FUNCTIONS
     // ============================================================================
 
@@ -673,6 +743,13 @@
         const todayChartCanvas = d.querySelector('#todayChart canvas');
         if (!isElementValid(todayChartCanvas)) return;
         if (!todayChartCanvas._chartInstance) return;
+        
+        // Verify canvas's chart date matches expected date
+        const expectedDate = getExpectedDate('today');
+        if (todayChartCanvas._chartDate && todayChartCanvas._chartDate !== expectedDate) {
+            console.log(`Skipping now line update: canvas date ${todayChartCanvas._chartDate} != expected ${expectedDate}`);
+            return;
+        }
 
         const chart = todayChartCanvas._chartInstance;
         
@@ -895,7 +972,12 @@
             if (currentDate !== todayExpected) {
                 console.log(`Date changed while hidden: ${currentDate} -> ${todayExpected}`);
                 currentDate = todayExpected;
+                
+                // Clear all data and increment generations to invalidate old timers
                 window.chartDataStore.clearAll();
+                window.chartRegistry.clearTimersForRole('today');
+                window.chartRegistry.clearTimersForRole('tomorrow');
+                
                 refreshChart('today');
                 setTimeout(() => refreshChart('tomorrow'), 500);
                 return;
@@ -908,20 +990,45 @@
                 const expectedDate = index === 0 ? todayExpected : tomorrowExpected;
                 const storeData = window.chartDataStore.getData(role);
                 
-                if (!storeData || storeData.date !== expectedDate || window.chartDataStore.isStale(role)) {
-                    console.log(`${role} chart needs refresh: storeDate=${storeData?.date}, expected=${expectedDate}, stale=${window.chartDataStore.isStale(role)}`);
+                // Also check if chart's date attribute matches
+                const section = d.getElementById(`${role}Chart`);
+                const domDate = section ? section.getAttribute('data-date') : null;
+                const domMismatch = domDate && domDate !== expectedDate;
+                
+                if (!storeData || storeData.date !== expectedDate || window.chartDataStore.isStale(role) || domMismatch) {
+                    console.log(`${role} chart needs refresh: storeDate=${storeData?.date}, domDate=${domDate}, expected=${expectedDate}, stale=${window.chartDataStore.isStale(role)}`);
+                    // Clear timers for this role before refresh
+                    window.chartRegistry.clearTimersForRole(role);
                     setTimeout(() => refreshChart(role), index * 500);
                     needsRefresh = true;
                 }
             });
 
             if (!needsRefresh) {
-                // Data is valid, just redraw
-                setTimeout(() => {
-                    window.redrawCharts();
-                    window.updateNowLine();
-                    window.updateCurrentPrice();
-                }, 100);
+                // Data is valid, verify chart canvas generations match store dates
+                const todayCanvas = d.querySelector('#todayChart canvas');
+                const tomorrowCanvas = d.querySelector('#tomorrowChart canvas');
+                
+                // Check if canvases exist and have valid chart instances
+                const todayValid = todayCanvas && todayCanvas._chartInstance && todayCanvas._chartDate === todayExpected;
+                const tomorrowValid = tomorrowCanvas && tomorrowCanvas._chartInstance && tomorrowCanvas._chartDate === tomorrowExpected;
+                
+                if (!todayValid) {
+                    console.log('Today canvas/chart invalid, refreshing...');
+                    window.chartRegistry.clearTimersForRole('today');
+                    refreshChart('today');
+                } else if (!tomorrowValid) {
+                    console.log('Tomorrow canvas/chart invalid, refreshing...');
+                    window.chartRegistry.clearTimersForRole('tomorrow');
+                    refreshChart('tomorrow');
+                } else {
+                    // Everything valid, just redraw
+                    setTimeout(() => {
+                        window.redrawCharts();
+                        window.updateNowLine();
+                        window.updateCurrentPrice();
+                    }, 100);
+                }
             }
         }
     };

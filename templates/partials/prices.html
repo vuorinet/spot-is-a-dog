@@ -17,6 +17,9 @@
 </section>
 
 <script>
+    // Chart generation counter to detect stale operations
+    window._chartGeneration = window._chartGeneration || { today: 0, tomorrow: 0 };
+
     // Create chart for {{ chart_date }}
     window.createChart = function (chartDate, chartRoleParam) {
         const date = chartDate || '{{ chart_date }}';
@@ -26,6 +29,11 @@
         const dateStringId = 'dateString_' + role;
         const chartElement = document.getElementById(chartId);
         const dateStringEl = document.getElementById(dateStringId);
+
+        // Increment generation counter - any operations from previous generations should be ignored
+        window._chartGeneration[role] = (window._chartGeneration[role] || 0) + 1;
+        const thisGeneration = window._chartGeneration[role];
+        console.log(`Chart ${role}: starting generation ${thisGeneration} for date ${date}`);
 
         // Get chart section to update the header text
         const chartSection = document.getElementById(role + 'Chart');
@@ -115,6 +123,12 @@
                 return response.json();
             })
             .then(data => {
+                // Check if this generation is still current
+                if (window._chartGeneration[role] !== thisGeneration) {
+                    console.warn(`Chart ${role}: generation ${thisGeneration} is stale (current: ${window._chartGeneration[role]}), aborting`);
+                    return;
+                }
+
                 console.log('Chart data received for', date, 'role:', role, 'rows:', data.data ? data.data.length : 0);
 
                 // Verify chart element is still in DOM and matches expected date
@@ -524,75 +538,75 @@
                     return;
                 }
 
-                // Register plugin to make last bar half-width
-                const halfWidthLastBarPlugin = {
-                    id: 'halfWidthLastBar',
-                    beforeDatasetsDraw: function(chart) {
-                        // Hide the last bar by making it transparent temporarily
-                        const lastIndex = chart.data.labels.length - 1;
-                        if (lastIndex >= 0) {
+                // Register half-width last bar plugin ONCE globally (not on every chart creation)
+                if (!window._halfWidthPluginRegistered) {
+                    const halfWidthLastBarPlugin = {
+                        id: 'halfWidthLastBar',
+                        beforeDatasetsDraw: function(chart) {
+                            // Only apply to charts with the extra 0:00 bar
+                            if (!chart.canvas || !chart.canvas._chartRole) return;
+                            
+                            const lastIndex = chart.data.labels.length - 1;
+                            if (lastIndex >= 0 && chart.data.labels[lastIndex] === '96') {
+                                chart.data.datasets.forEach((dataset, datasetIndex) => {
+                                    const meta = chart.getDatasetMeta(datasetIndex);
+                                    if (meta.data[lastIndex]) {
+                                        meta.data[lastIndex].hidden = true;
+                                    }
+                                });
+                            }
+                        },
+                        afterDatasetsDraw: function(chart) {
+                            // Only apply to charts with the extra 0:00 bar
+                            if (!chart.canvas || !chart.canvas._chartRole) return;
+                            
+                            const lastIndex = chart.data.labels.length - 1;
+                            if (lastIndex < 0 || chart.data.labels[lastIndex] !== '96') return;
+                            
+                            const ctx = chart.ctx;
+                            const xScale = chart.scales.x;
+                            const yScale = chart.scales.y;
+                            
+                            if (!xScale || !yScale) return;
+                            
+                            const categoryWidth = xScale.width / (xScale.max - xScale.min + 1);
+                            const barPercentage = (window.innerWidth <= 900 || (window.innerWidth > 900 && window.innerWidth <= 1200)) ? 0.95 : 0.90;
+                            const fullBarWidth = categoryWidth * barPercentage;
+                            const halfBarWidth = fullBarWidth / 2;
+                            const categoryCenter = xScale.getPixelForValue(lastIndex);
+                            const halfBarX = categoryCenter - fullBarWidth / 4;
+                            
+                            // Draw stacked bar segments from bottom to top
+                            let currentY = yScale.getPixelForValue(0);
                             chart.data.datasets.forEach((dataset, datasetIndex) => {
-                                const meta = chart.getDatasetMeta(datasetIndex);
-                                if (meta.data[lastIndex]) {
-                                    meta.data[lastIndex].hidden = true;
+                                const value = dataset.data[lastIndex];
+                                if (value !== null && value !== undefined && value !== 0) {
+                                    let cumulativeValue = 0;
+                                    for (let i = 0; i <= datasetIndex; i++) {
+                                        const segValue = chart.data.datasets[i].data[lastIndex];
+                                        if (segValue !== null && segValue !== undefined) {
+                                            cumulativeValue += segValue;
+                                        }
+                                    }
+                                    
+                                    const segmentTop = yScale.getPixelForValue(cumulativeValue);
+                                    const segmentHeight = currentY - segmentTop;
+                                    
+                                    ctx.save();
+                                    ctx.fillStyle = dataset.backgroundColor;
+                                    ctx.fillRect(halfBarX, segmentTop, halfBarWidth, segmentHeight);
+                                    ctx.restore();
+                                    
+                                    currentY = segmentTop;
                                 }
                             });
                         }
-                    },
-                    afterDatasetsDraw: function(chart) {
-                        const ctx = chart.ctx;
-                        const lastIndex = chart.data.labels.length - 1;
-                        if (lastIndex < 0) return;
-                        
-                        const xScale = chart.scales.x;
-                        const yScale = chart.scales.y;
-                        const categoryWidth = xScale.width / (xScale.max - xScale.min + 1);
-                        const barPercentage = (window.innerWidth <= 900 || (window.innerWidth > 900 && window.innerWidth <= 1200)) ? 0.95 : 0.90;
-                        const fullBarWidth = categoryWidth * barPercentage;
-                        const halfBarWidth = fullBarWidth / 2;
-                        const categoryCenter = xScale.getPixelForValue(lastIndex);
-                        const halfBarX = categoryCenter - fullBarWidth / 4;
-                        
-                        // Calculate total stacked value
-                        let totalValue = 0;
-                        chart.data.datasets.forEach((dataset) => {
-                            const value = dataset.data[lastIndex];
-                            if (value !== null && value !== undefined) {
-                                totalValue += value;
-                            }
-                        });
-                        
-                        // Draw stacked bar segments from bottom to top
-                        let currentY = yScale.getPixelForValue(0);
-                        chart.data.datasets.forEach((dataset) => {
-                            const value = dataset.data[lastIndex];
-                            if (value !== null && value !== undefined && value !== 0) {
-                                // Calculate the cumulative value up to this segment
-                                let cumulativeValue = 0;
-                                const datasetIndex = chart.data.datasets.indexOf(dataset);
-                                for (let i = 0; i <= datasetIndex; i++) {
-                                    const segValue = chart.data.datasets[i].data[lastIndex];
-                                    if (segValue !== null && segValue !== undefined) {
-                                        cumulativeValue += segValue;
-                                    }
-                                }
-                                
-                                const segmentTop = yScale.getPixelForValue(cumulativeValue);
-                                const segmentHeight = currentY - segmentTop;
-                                
-                                ctx.save();
-                                ctx.fillStyle = dataset.backgroundColor;
-                                ctx.fillRect(halfBarX, segmentTop, halfBarWidth, segmentHeight);
-                                ctx.restore();
-                                
-                                currentY = segmentTop;
-                            }
-                        });
-                    }
-                };
-                
-                // Register the plugin
-                Chart.register(halfWidthLastBarPlugin);
+                    };
+                    
+                    Chart.register(halfWidthLastBarPlugin);
+                    window._halfWidthPluginRegistered = true;
+                    console.log('Half-width last bar plugin registered');
+                }
 
                 // Create chart
                 let chart;
@@ -665,20 +679,28 @@
                     setTimeout(updateHourLabels, 100);
                 };
 
+                // Final generation check before storing
+                if (window._chartGeneration[role] !== thisGeneration) {
+                    console.warn(`Chart ${role}: generation ${thisGeneration} became stale during creation, destroying`);
+                    chart.destroy();
+                    return;
+                }
+
                 // Store chart instance and metadata on canvas (for compatibility)
                 chartElement._chartInstance = chart;
                 chartElement._chartDate = date;  // Store the date this chart was created for
                 chartElement._chartRole = role;
+                chartElement._chartGeneration = thisGeneration;  // Store generation for timer validation
 
                 // Set up now line timer for today's chart
                 if (role === 'today') {
-                    setupNowLineTimer(role, date);
+                    setupNowLineTimer(role, date, thisGeneration);
                     if (window.updateCurrentPrice) {
                         window.updateCurrentPrice();
                     }
                 }
 
-                console.log('Chart created successfully for', role, 'date:', date, 'dataPoints:', validData.length);
+                console.log(`Chart created successfully for ${role} (gen ${thisGeneration}), date: ${date}, dataPoints: ${validData.length}`);
             })
             .catch(error => {
                 console.error('Error fetching chart data:', error);
@@ -687,9 +709,15 @@
                 }
             });
 
-        // Now line timer that uses global data store (not closures)
-        function setupNowLineTimer(role, chartDate) {
+        // Now line timer that uses global data store and validates generation
+        function setupNowLineTimer(role, chartDate, generation) {
             function updateNowLineFromStore() {
+                // Check if this timer's generation is still current
+                if (window._chartGeneration[role] !== generation) {
+                    console.log(`Now line timer (gen ${generation}): stale, current is ${window._chartGeneration[role]}`);
+                    return;
+                }
+                
                 if (document.hidden) return;
                 
                 // Get current expected date
@@ -698,6 +726,13 @@
                 // If date has changed, don't update - let the refresh handle it
                 if (expectedDate && chartDate !== expectedDate) {
                     console.log('Now line timer: date changed, skipping update');
+                    return;
+                }
+                
+                // Verify the chart canvas still matches our generation
+                const canvas = document.querySelector('#todayChart canvas');
+                if (!canvas || canvas._chartGeneration !== generation) {
+                    console.log(`Now line timer (gen ${generation}): canvas generation mismatch`);
                     return;
                 }
                 
@@ -718,14 +753,41 @@
             }
 
             function scheduleNext() {
+                // Don't schedule if already stale
+                if (window._chartGeneration[role] !== generation) {
+                    console.log(`Now line timer (gen ${generation}): not scheduling, already stale`);
+                    return;
+                }
+                
                 const ms = msUntilNext15Min();
+                console.log(`Now line timer (gen ${generation}): scheduling for ${ms}ms`);
+                
                 const timeoutId = setTimeout(() => {
+                    // Check generation before doing anything
+                    if (window._chartGeneration[role] !== generation) {
+                        console.log(`Now line timer (gen ${generation}): timeout fired but stale`);
+                        return;
+                    }
+                    
                     updateNowLineFromStore();
-                    const intervalId = setInterval(updateNowLineFromStore, 15 * 60 * 1000);
-                    if (window.chartRegistry) {
-                        window.chartRegistry.trackTimer(intervalId, role, 'now-line-interval');
+                    
+                    // Only set up interval if still current generation
+                    if (window._chartGeneration[role] === generation) {
+                        const intervalId = setInterval(() => {
+                            if (window._chartGeneration[role] !== generation) {
+                                // Clear this interval since we're stale
+                                clearInterval(intervalId);
+                                return;
+                            }
+                            updateNowLineFromStore();
+                        }, 15 * 60 * 1000);
+                        
+                        if (window.chartRegistry) {
+                            window.chartRegistry.trackTimer(intervalId, role, 'now-line-interval');
+                        }
                     }
                 }, ms);
+                
                 if (window.chartRegistry) {
                     window.chartRegistry.trackTimer(timeoutId, role, 'now-line-timeout');
                 }
