@@ -247,77 +247,135 @@
                 }
                 
                 // Helper function to check if data contains any negative spot prices
-                function hasNegativeSpotPrices(dataArray) {
-                    if (!dataArray || !Array.isArray(dataArray)) return false;
-                    for (const row of dataArray) {
-                        if (Array.isArray(row) && row.length >= 5) {
-                            const [, lowPrice, mediumPrice, highPrice] = row;
-                            const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
-                            if (spotPrice < 0) {
-                                return true;
+                // and calculate actual min/max values from data
+                function calculateDataRange(dataArray) {
+                    let min = Infinity;
+                    let max = -Infinity;
+                    let hasNegative = false;
+                    
+                    if (dataArray && Array.isArray(dataArray)) {
+                        for (const row of dataArray) {
+                            if (Array.isArray(row) && row.length >= 5) {
+                                const [, lowPrice, mediumPrice, highPrice, marginPrice] = row;
+                                const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
+                                const totalPrice = spotPrice + (marginPrice || 0);
+                                
+                                if (spotPrice < min) min = spotPrice;
+                                if (totalPrice > max) max = totalPrice;
+                                if (spotPrice < 0) hasNegative = true;
                             }
                         }
                     }
-                    return false;
+                    
+                    // If no valid data or min/max not set, return defaults
+                    if (min === Infinity) min = 0;
+                    if (max === -Infinity) max = 15;
+                    
+                    return { min, max, hasNegative };
                 }
                 
-                // Check if current chart has negative prices
-                const currentHasNegative = hasNegativeSpotPrices(validData);
+                // Calculate range for current chart data
+                const currentRange = calculateDataRange(validData);
                 
-                // Get price values from API response
-                const apiMaxPrice = Math.max(15, data.maxPrice);
-                // Only use negative minPrice if there are actual negative prices in the data
-                const apiMinPrice = currentHasNegative ? data.minPrice : Math.max(0, data.minPrice);
+                // Initialize global tracking variables with current chart values
+                let globalMin = currentRange.min;
+                let globalMax = currentRange.max;
+                let anyNegative = currentRange.hasNegative;
                 
-                // Recalculate global range from both charts' data to ensure consistency
-                // This ensures both charts always use the same min and max price range
-                let globalMin = apiMinPrice;
-                let globalMax = apiMaxPrice;
-                
+                // Check other chart data from store to update global range
                 if (window.chartDataStore) {
-                    const todayData = window.chartDataStore.getData('today');
-                    const tomorrowData = window.chartDataStore.getData('tomorrow');
-                    
-                    // Check if either chart has negative prices
-                    const todayHasNegative = todayData && todayData.data ? hasNegativeSpotPrices(todayData.data) : false;
-                    const tomorrowHasNegative = tomorrowData && tomorrowData.data ? hasNegativeSpotPrices(tomorrowData.data) : false;
-                    const anyHasNegative = currentHasNegative || todayHasNegative || tomorrowHasNegative;
-                    
-                    // Check the other chart's price range if available
                     const otherRole = role === 'today' ? 'tomorrow' : 'today';
-                    const otherData = role === 'today' ? tomorrowData : todayData;
+                    const otherData = window.chartDataStore.getData(otherRole);
                     
-                    if (otherData && otherData.priceRange) {
-                        const otherMin = otherData.priceRange.minPrice;
-                        const otherMax = otherData.priceRange.maxPrice;
-                        
-                        // Use the minimum of both min prices
-                        if (otherMin !== null && otherMin !== undefined) {
-                            globalMin = Math.min(globalMin, otherMin);
-                        }
-                        
-                        // Use the maximum of both max prices (already handled by Math.max(15, ...))
-                        if (otherMax !== null && otherMax !== undefined) {
-                            globalMax = Math.max(globalMax, otherMax);
-                        }
-                    }
-                    
-                    // Final check: if no negative prices exist in any chart, ensure minPrice is >= 0
-                    if (!anyHasNegative) {
-                        globalMin = Math.max(0, globalMin);
-                    }
-                } else {
-                    // If no chart data store, ensure minPrice is >= 0 if no negative prices
-                    if (!currentHasNegative) {
-                        globalMin = Math.max(0, globalMin);
+                    if (otherData && otherData.data) {
+                        const otherRange = calculateDataRange(otherData.data);
+                        globalMin = Math.min(globalMin, otherRange.min);
+                        globalMax = Math.max(globalMax, otherRange.max);
+                        if (otherRange.hasNegative) anyNegative = true;
                     }
                 }
                 
-                // Update global range
+                // Apply rounding and clamping logic (matching backend logic)
+                
+                // Max: Always at least 15 cents. Round up to next 5 cents.
+                // If max is 17.2, it becomes 20. If 12, it becomes 15.
+                if (globalMax <= 0) {
+                    globalMax = 15;
+                } else {
+                    // Use Math.ceil(val / 5) * 5 logic
+                    const rawMax = Math.max(15, globalMax);
+                    if (rawMax % 5 === 0) {
+                        globalMax = Math.ceil(rawMax);
+                    } else {
+                        globalMax = Math.ceil(rawMax / 5) * 5;
+                    }
+                }
+                
+                // Min: If no negative prices, force 0. Else round down to integer.
+                // If min is -0.5, it becomes -1. If 2.5 (and no negatives anywhere), it becomes 0.
+                if (!anyNegative && globalMin >= 0) {
+                    globalMin = 0;
+                } else {
+                    globalMin = Math.floor(globalMin);
+                }
+                
+                // Update global range tracker
+                if (!window.globalPriceRange) {
+                    window.globalPriceRange = { minPrice: null, maxPrice: null };
+                }
+                
+                // Check if range changed
+                const previousGlobalMin = window.globalPriceRange.minPrice;
+                const previousGlobalMax = window.globalPriceRange.maxPrice;
+                const rangeChanged = previousGlobalMin !== globalMin || previousGlobalMax !== globalMax;
+                
                 window.globalPriceRange.minPrice = globalMin;
                 window.globalPriceRange.maxPrice = globalMax;
                 
-                // Use global range for consistent scaling across both charts
+                // If global range changed, update the OTHER chart if it exists
+                if (rangeChanged && window.chartRegistry) {
+                    const otherRole = role === 'today' ? 'tomorrow' : 'today';
+                    const otherChartInfo = window.chartRegistry.getChartByRole(otherRole);
+                    
+                    if (otherChartInfo && otherChartInfo.instance) {
+                        try {
+                            const chartInstance = otherChartInfo.instance;
+                            // Check if scale exists and needs update
+                            if (chartInstance.scales && chartInstance.scales.y) {
+                                const yScale = chartInstance.scales.y;
+                                if (yScale.min !== globalMin || yScale.max !== globalMax) {
+                                    console.log(`Updating ${otherRole} chart y-axis to ${globalMin} - ${globalMax}`);
+                                    
+                                    // Update scale options
+                                    chartInstance.options.scales.y.min = globalMin;
+                                    chartInstance.options.scales.y.max = globalMax;
+                                    
+                                    // Update annotations if they rely on min/max
+                                    if (chartInstance.options.plugins && chartInstance.options.plugins.annotation) {
+                                        const annotations = chartInstance.options.plugins.annotation.annotations;
+                                        if (annotations) {
+                                            Object.keys(annotations).forEach(key => {
+                                                const ann = annotations[key];
+                                                // Update vertical lines to span full height
+                                                if (key.startsWith('vline_') || key.startsWith('nowline')) {
+                                                    if (ann.yMin !== undefined) ann.yMin = globalMin;
+                                                    if (ann.yMax !== undefined) ann.yMax = globalMax;
+                                                }
+                                                // Horizontal lines don't need update as they are at fixed Y values
+                                            });
+                                        }
+                                    }
+                                    
+                                    chartInstance.update('none');
+                                }
+                            }
+                        } catch (e) {
+                            console.warn(`Error updating ${otherRole} chart scales:`, e);
+                        }
+                    }
+                }
+                
+                // Use global range for consistent scaling
                 const maxPrice = window.globalPriceRange.maxPrice;
                 const minPrice = window.globalPriceRange.minPrice;
                 const priceRange = { minPrice, maxPrice };
