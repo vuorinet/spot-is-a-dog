@@ -675,7 +675,8 @@ def create_app() -> FastAPI:
                 if time_key in chart_data_dict:
                     complete_chart_data.append(chart_data_dict[time_key])
                 else:
-                    complete_chart_data.append([time_key, 0, 0, 0, margin_cents])
+                    # When price data is not available, don't draw margin either
+                    complete_chart_data.append([time_key, 0, 0, 0, 0])
 
             # Handle case where no actual price data found
             if not chart_data:
