@@ -98,19 +98,46 @@ def parse_publication_xml(xml_bytes: bytes) -> DaySeries:
             price = float(amount_text)
             pos_to_price[pos] = price
 
+        # Calculate expected number of positions based on period duration
+        period_duration = end_dt - start_dt
+        expected_positions = int(period_duration / step)
+        
+        if pos_to_price:
+            max_position_in_xml = max(pos_to_price.keys())
+            if max_position_in_xml < expected_positions:
+                logger.debug(
+                    "Gap at end of period: XML has positions 1-%d, expected %d",
+                    max_position_in_xml,
+                    expected_positions,
+                )
+
         # Fill sequentially; ENTSO-E may skip positions to compress equal values
+        # (including zero or negative prices)
         idx = 1
         cur = start_dt
-        while cur < end_dt:
+        last_price_in_period: float | None = None  # Track last price within THIS period
+        
+        while idx <= expected_positions:
             price = pos_to_price.get(idx)
             if price is None:
-                if not all_points:
+                # Position is missing - ENTSO-E skips positions when price is same as previous
+                if last_price_in_period is not None:
+                    # Use last known price from THIS period
+                    price = last_price_in_period
+                else:
+                    # First position(s) missing - find next available price in this period
                     price = next(
                         (v for k, v in sorted(pos_to_price.items()) if k >= idx),
                         0.0,
                     )
-                else:
-                    price = all_points[-1].price_eur_per_mwh
+                    if price != 0.0:
+                        logger.debug(
+                            "Gap at start: position %d missing, using next available price %.2f",
+                            idx,
+                            price,
+                        )
+            
+            last_price_in_period = price
             pt_end = cur + step
             all_points.append(PricePoint(cur, pt_end, price))
             cur = pt_end
