@@ -217,6 +217,27 @@ def create_app() -> FastAPI:
     logger.info("Log level: %s", LOG_LEVEL)
     logger.info("Default margin (c/kWh): %s", DEFAULT_MARGIN_CENTS_PER_KWH)
 
+    # Add cache-control middleware for proper browser caching
+    @app.middleware("http")
+    async def add_cache_control_headers(request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        
+        # Versioned static files (with ?v=... query param) can be cached long-term
+        # since the version is part of the URL
+        if path.startswith("/static/") and "v=" in str(request.url.query):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        # Non-versioned static files should be cached but revalidated
+        elif path.startswith("/static/"):
+            response.headers["Cache-Control"] = "public, max-age=3600, must-revalidate"
+        # HTML pages and dynamic content should not be cached
+        elif path in ["/", "/index"] or not path.startswith("/api"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        
+        return response
+
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(ProxyHeadersMiddleware)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
