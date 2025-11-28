@@ -866,8 +866,8 @@
             const safeMargin = typeof marginPrice === 'number' && !isNaN(marginPrice) ? marginPrice : 0;
 
             const spotPrice = safeLow + safeMed + safeHigh;
-            const totalPrice = spotPrice + safeMargin;
-            const displayPrice = spotPrice > 0 ? spotPrice : totalPrice;
+            // Always show spot price (without margin), even if it's zero or negative
+            const displayPrice = spotPrice;
             const priceText = displayPrice.toFixed(2) + ' c/kWh';
 
             priceElement.textContent = priceText;
