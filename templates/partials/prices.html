@@ -136,7 +136,7 @@
                     console.warn('Chart element no longer in DOM, aborting');
                     return;
                 }
-                
+
                 const sectionElement = document.getElementById(role + 'Chart');
                 if (sectionElement) {
                     const currentDate = sectionElement.getAttribute('data-date');
@@ -240,53 +240,53 @@
 
                 // Store data in global data store (single source of truth)
                 const granularity = data.granularity || 'quarter_hour';
-                
+
                 // Initialize global price range tracker if it doesn't exist
                 if (!window.globalPriceRange) {
                     window.globalPriceRange = { minPrice: null, maxPrice: null };
                 }
-                
+
                 // Helper function to check if data contains any negative spot prices
                 // and calculate actual min/max values from data
                 function calculateDataRange(dataArray) {
                     let min = Infinity;
                     let max = -Infinity;
                     let hasNegative = false;
-                    
+
                     if (dataArray && Array.isArray(dataArray)) {
                         for (const row of dataArray) {
                             if (Array.isArray(row) && row.length >= 5) {
                                 const [, lowPrice, mediumPrice, highPrice, marginPrice] = row;
                                 const spotPrice = (lowPrice || 0) + (mediumPrice || 0) + (highPrice || 0);
                                 const totalPrice = spotPrice + (marginPrice || 0);
-                                
+
                                 if (spotPrice < min) min = spotPrice;
                                 if (totalPrice > max) max = totalPrice;
                                 if (spotPrice < 0) hasNegative = true;
                             }
                         }
                     }
-                    
+
                     // If no valid data or min/max not set, return defaults
                     if (min === Infinity) min = 0;
                     if (max === -Infinity) max = 15;
-                    
+
                     return { min, max, hasNegative };
                 }
-                
+
                 // Calculate range for current chart data
                 const currentRange = calculateDataRange(validData);
-                
+
                 // Initialize global tracking variables with current chart values
                 let globalMin = currentRange.min;
                 let globalMax = currentRange.max;
                 let anyNegative = currentRange.hasNegative;
-                
+
                 // Check other chart data from store to update global range
                 if (window.chartDataStore) {
                     const otherRole = role === 'today' ? 'tomorrow' : 'today';
                     const otherData = window.chartDataStore.getData(otherRole);
-                    
+
                     if (otherData && otherData.data) {
                         const otherRange = calculateDataRange(otherData.data);
                         globalMin = Math.min(globalMin, otherRange.min);
@@ -294,9 +294,9 @@
                         if (otherRange.hasNegative) anyNegative = true;
                     }
                 }
-                
+
                 // Apply rounding and clamping logic (matching backend logic)
-                
+
                 // Max: Always at least 15 cents. Round up to next 5 cents.
                 // If max is 17.2, it becomes 20. If 12, it becomes 15.
                 if (globalMax <= 0) {
@@ -310,7 +310,7 @@
                         globalMax = Math.ceil(rawMax / 5) * 5;
                     }
                 }
-                
+
                 // Min: If no negative prices, force 0. Else round down to integer.
                 // If min is -0.5, it becomes -1. If 2.5 (and no negatives anywhere), it becomes 0.
                 if (!anyNegative && globalMin >= 0) {
@@ -318,25 +318,25 @@
                 } else {
                     globalMin = Math.floor(globalMin);
                 }
-                
+
                 // Update global range tracker
                 if (!window.globalPriceRange) {
                     window.globalPriceRange = { minPrice: null, maxPrice: null };
                 }
-                
+
                 // Check if range changed
                 const previousGlobalMin = window.globalPriceRange.minPrice;
                 const previousGlobalMax = window.globalPriceRange.maxPrice;
                 const rangeChanged = previousGlobalMin !== globalMin || previousGlobalMax !== globalMax;
-                
+
                 window.globalPriceRange.minPrice = globalMin;
                 window.globalPriceRange.maxPrice = globalMax;
-                
+
                 // If global range changed, update the OTHER chart if it exists
                 if (rangeChanged && window.chartRegistry) {
                     const otherRole = role === 'today' ? 'tomorrow' : 'today';
                     const otherChartInfo = window.chartRegistry.getChartByRole(otherRole);
-                    
+
                     if (otherChartInfo && otherChartInfo.instance) {
                         try {
                             const chartInstance = otherChartInfo.instance;
@@ -345,11 +345,11 @@
                                 const yScale = chartInstance.scales.y;
                                 if (yScale.min !== globalMin || yScale.max !== globalMax) {
                                     console.log(`Updating ${otherRole} chart y-axis to ${globalMin} - ${globalMax}`);
-                                    
+
                                     // Update scale options
                                     chartInstance.options.scales.y.min = globalMin;
                                     chartInstance.options.scales.y.max = globalMax;
-                                    
+
                                     // Update annotations if they rely on min/max
                                     if (chartInstance.options.plugins && chartInstance.options.plugins.annotation) {
                                         const annotations = chartInstance.options.plugins.annotation.annotations;
@@ -360,16 +360,20 @@
                                                     delete annotations[key];
                                                 }
                                             });
-                                            
+
                                             // Add horizontal gridlines for the new global range
+                                            // Calculate gridline offset to match the shifted vertical gridlines
+                                            // Position gridlines exactly between bars
+                                            const gridlineOffset = 0.5; // Shift left by 0.5 to position between bars
+
                                             for (let price = globalMin; price <= globalMax; price += 1) {
                                                 const isMajor = price % 5 === 0;
                                                 annotations[`hline_${price}`] = {
                                                     type: 'line',
                                                     yMin: price,
                                                     yMax: price,
-                                                    xMin: 0,
-                                                    xMax: chartInstance.data.labels.length > 0 ? chartInstance.data.labels.length - 1 : 0,
+                                                    xMin: 0 - gridlineOffset, // Start from shifted left position (before first bar)
+                                                    xMax: 96 - gridlineOffset, // End at shifted right position (at right edge of last bar)
                                                     borderColor: isMajor ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.15)',
                                                     borderWidth: isMajor ? 2 : 1.5,
                                                     drawTime: 'beforeDatasetsDraw',
@@ -377,7 +381,7 @@
                                                     yScaleID: 'y'
                                                 };
                                             }
-                                            
+
                                             // Update vertical lines to span full height
                                             Object.keys(annotations).forEach(key => {
                                                 const ann = annotations[key];
@@ -388,7 +392,7 @@
                                             });
                                         }
                                     }
-                                    
+
                                     chartInstance.update('none');
                                 }
                             }
@@ -397,12 +401,12 @@
                         }
                     }
                 }
-                
+
                 // Use global range for consistent scaling
                 const maxPrice = window.globalPriceRange.maxPrice;
                 const minPrice = window.globalPriceRange.minPrice;
                 const priceRange = { minPrice, maxPrice };
-                
+
                 if (window.chartDataStore) {
                     window.chartDataStore.setData(role, date, validData, granularity, priceRange);
                 }
@@ -423,16 +427,12 @@
                     marginData.push(marginPrice !== 0 ? marginPrice : null);
                 });
 
-                // Add extra label and data point at the end for 0:00 (hour 24)
-                // Copy the last bar's data (23:45) to show at 0:00 position with half-width
-                // This extends the chart to the correct width so the end grid line is visible
-                const lastIndex = validData.length - 1;
+                // Add pseudo bar at the end with zero values to extend x-axis for rightmost gridline
                 labels.push('96'); // Index for 0:00 (96 = 24 hours * 4 quarters)
-                // Copy last bar's data for the half-width bar at 0:00
-                lowData.push(lastIndex >= 0 ? lowData[lastIndex] : null);
-                medData.push(lastIndex >= 0 ? medData[lastIndex] : null);
-                highData.push(lastIndex >= 0 ? highData[lastIndex] : null);
-                marginData.push(lastIndex >= 0 ? marginData[lastIndex] : null);
+                lowData.push(null);
+                medData.push(null);
+                highData.push(null);
+                marginData.push(null);
 
                 // Responsive settings
                 const isMobile = window.innerWidth <= 900;
@@ -443,15 +443,23 @@
 
                 // Add hourly vertical lines
                 // Every 3rd hour (0, 3, 6, 9, 12, 15, 18, 21) is bolder for easier navigation
+                // Position gridlines exactly between bars (at the midpoint of the gap)
+                // Bars are centered on ticks, so gap midpoint is at tick + 0.5
+                // To position gridline at tick i to be between bars, shift to i - 0.5
+                const barPercentage = (isMobile || isTablet) ? 0.95 : 0.90;
+                const gridlineOffset = 0.5; // Shift left by 0.5 to position between bars
+
                 const hourStep = 4;
                 for (let hour = 0; hour < 24; hour++) {
                     const dataPointIndex = hour * hourStep;
                     if (dataPointIndex < validData.length) {
                         const isMajorHour = hour % 3 === 0;
+                        // Shift left by half bar width
+                        const shiftedIndex = dataPointIndex - gridlineOffset;
                         annotations[`vline_${hour}`] = {
                             type: 'line',
-                            xMin: dataPointIndex,
-                            xMax: dataPointIndex,
+                            xMin: shiftedIndex,
+                            xMax: shiftedIndex,
                             yMin: minPrice,
                             yMax: maxPrice,
                             borderColor: isMajorHour ? 'rgba(255, 255, 255, 0.4)' : 'rgba(255, 255, 255, 0.2)',
@@ -462,16 +470,17 @@
                         };
                     }
                 }
-                
-                // Add grid line at the end of the day (0:00 / hour 24)
-                // The x-axis is extended with afterBuildTicks to include index 96
-                const endOfDayIndex = validData.length;
-                if (endOfDayIndex > 0) {
-                    // Hour 24 (0:00 next day) is a major hour (24 % 3 === 0)
+
+                // Add grid line at the end of the day (at index 96, after last bar at 23:45)
+                // Position it at the right edge of the last actual bar
+                const lastBarIndex = validData.length - 1; // Index 95 (23:45)
+                if (lastBarIndex >= 0) {
+                    // Position at index 96, shifted left by half bar width
+                    const shiftedEndIndex = 96 - gridlineOffset;
                     annotations['vline_24'] = {
                         type: 'line',
-                        xMin: endOfDayIndex,
-                        xMax: endOfDayIndex,
+                        xMin: shiftedEndIndex,
+                        xMax: shiftedEndIndex,
                         yMin: minPrice,
                         yMax: maxPrice,
                         borderColor: 'rgba(255, 255, 255, 0.4)',
@@ -483,14 +492,16 @@
                 }
 
                 // Add horizontal gridlines (every 1 cent, major every 5)
+                // Shift to align with shifted vertical gridlines
+                const lastDataIndex = labels.length > 0 ? labels.length - 1 : 0; // Index 96 (pseudo bar)
                 for (let price = minPrice; price <= maxPrice; price += 1) {
                     const isMajor = price % 5 === 0;
                     annotations[`hline_${price}`] = {
                         type: 'line',
                         yMin: price,
                         yMax: price,
-                        xMin: 0,
-                        xMax: labels.length > 0 ? labels.length - 1 : 0,
+                        xMin: 0 - gridlineOffset, // Start from shifted left position (before first bar)
+                        xMax: 96 - gridlineOffset, // End at shifted right position (at right edge of last bar)
                         borderColor: isMajor ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.15)',
                         borderWidth: isMajor ? 2 : 1.5,
                         drawTime: 'beforeDatasetsDraw',
@@ -540,6 +551,12 @@
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
+                        layout: {
+                            padding: {
+                                left: 0,
+                                right: 0
+                            }
+                        },
                         plugins: {
                             legend: { display: false },
                             tooltip: {
@@ -553,29 +570,6 @@
                                 clip: false
                             }
                         },
-                        // Hook to make the last bar (0:00) half-width
-                        afterUpdate: function(chart) {
-                            // Make the last bar half-width to match tomorrow's first bar
-                            chart.data.datasets.forEach((dataset, datasetIndex) => {
-                                const meta = chart.getDatasetMeta(datasetIndex);
-                                const lastIndex = meta.data.length - 1;
-                                if (lastIndex >= 0 && meta.data[lastIndex]) {
-                                    const lastBar = meta.data[lastIndex];
-                                    // Calculate half-width based on category width
-                                    const xScale = chart.scales.x;
-                                    const categoryWidth = xScale.width / (xScale.max - xScale.min + 1);
-                                    const barPercentage = (window.innerWidth <= 900 || (window.innerWidth > 900 && window.innerWidth <= 1200)) ? 0.95 : 0.90;
-                                    const fullBarWidth = categoryWidth * barPercentage;
-                                    const halfBarWidth = fullBarWidth / 2;
-                                    
-                                    // Adjust the bar width and position
-                                    lastBar.width = halfBarWidth;
-                                    // Position it at the left edge of the category (centered would be x, but we want it left-aligned for half-width)
-                                    const categoryCenter = xScale.getPixelForValue(lastIndex);
-                                    lastBar.x = categoryCenter - fullBarWidth / 4;
-                                }
-                            });
-                        },
                         scales: {
                             x: {
                                 id: 'x',
@@ -583,7 +577,8 @@
                                 display: true,
                                 barPercentage: (isMobile || isTablet) ? 0.95 : 0.90,
                                 categoryPercentage: 1.0,
-                                offset: false,
+                                offset: true, // Add padding on both sides so first/last bars render at full width
+                                bounds: 'ticks',
                                 ticks: {
                                     color: 'transparent',
                                     font: { size: isMobile ? 10 : (isTablet ? 14 : 12) },
@@ -591,8 +586,9 @@
                                         // Show hour labels every 4 intervals (every hour)
                                         if (index % 4 === 0) {
                                             const hour = Math.floor(index / 4);
-                                            // Show "0" for hour 24 (0:00 next day) at the end
-                                            return hour === 24 ? '0' : hour.toString();
+                                            // Don't show hour 24 as we no longer have the extra bar
+                                            if (hour >= 24) return '';
+                                            return hour.toString();
                                         }
                                         return '';
                                     },
@@ -625,7 +621,7 @@
                             if (elements.length === 0) return;
                             const chart = this;
                             const index = elements[0].index;
-                            
+
                             // Use data from global store to ensure freshness
                             let rowData = validData[index];
                             if (window.chartDataStore) {
@@ -697,74 +693,31 @@
                     return;
                 }
 
-                // Register half-width last bar plugin ONCE globally (not on every chart creation)
-                if (!window._halfWidthPluginRegistered) {
-                    const halfWidthLastBarPlugin = {
-                        id: 'halfWidthLastBar',
-                        beforeDatasetsDraw: function(chart) {
-                            // Only apply to charts with the extra 0:00 bar
+                // Register plugin to hide the pseudo bar at index 96
+                // Bars stay in their default positions (centered on ticks), only gridlines are shifted
+                if (!window._hidePseudoBarPluginRegistered) {
+                    const hidePseudoBarPlugin = {
+                        id: 'hidePseudoBarPlugin',
+                        afterUpdate: function (chart) {
                             if (!chart.canvas || !chart.canvas._chartRole) return;
-                            
-                            const lastIndex = chart.data.labels.length - 1;
-                            if (lastIndex >= 0 && chart.data.labels[lastIndex] === '96') {
-                                chart.data.datasets.forEach((dataset, datasetIndex) => {
-                                    const meta = chart.getDatasetMeta(datasetIndex);
+
+                            chart.data.datasets.forEach((dataset, datasetIndex) => {
+                                const meta = chart.getDatasetMeta(datasetIndex);
+                                const lastIndex = meta.data.length - 1;
+
+                                // Hide the pseudo bar at index 96 (it has null values, won't render anyway)
+                                if (lastIndex >= 0 && chart.data.labels[lastIndex] === '96') {
                                     if (meta.data[lastIndex]) {
                                         meta.data[lastIndex].hidden = true;
                                     }
-                                });
-                            }
-                        },
-                        afterDatasetsDraw: function(chart) {
-                            // Only apply to charts with the extra 0:00 bar
-                            if (!chart.canvas || !chart.canvas._chartRole) return;
-                            
-                            const lastIndex = chart.data.labels.length - 1;
-                            if (lastIndex < 0 || chart.data.labels[lastIndex] !== '96') return;
-                            
-                            const ctx = chart.ctx;
-                            const xScale = chart.scales.x;
-                            const yScale = chart.scales.y;
-                            
-                            if (!xScale || !yScale) return;
-                            
-                            const categoryWidth = xScale.width / (xScale.max - xScale.min + 1);
-                            const barPercentage = (window.innerWidth <= 900 || (window.innerWidth > 900 && window.innerWidth <= 1200)) ? 0.95 : 0.90;
-                            const fullBarWidth = categoryWidth * barPercentage;
-                            const halfBarWidth = fullBarWidth / 2;
-                            const categoryCenter = xScale.getPixelForValue(lastIndex);
-                            const halfBarX = categoryCenter - fullBarWidth / 4;
-                            
-                            // Draw stacked bar segments from bottom to top
-                            let currentY = yScale.getPixelForValue(0);
-                            chart.data.datasets.forEach((dataset, datasetIndex) => {
-                                const value = dataset.data[lastIndex];
-                                if (value !== null && value !== undefined && value !== 0) {
-                                    let cumulativeValue = 0;
-                                    for (let i = 0; i <= datasetIndex; i++) {
-                                        const segValue = chart.data.datasets[i].data[lastIndex];
-                                        if (segValue !== null && segValue !== undefined) {
-                                            cumulativeValue += segValue;
-                                        }
-                                    }
-                                    
-                                    const segmentTop = yScale.getPixelForValue(cumulativeValue);
-                                    const segmentHeight = currentY - segmentTop;
-                                    
-                                    ctx.save();
-                                    ctx.fillStyle = dataset.backgroundColor;
-                                    ctx.fillRect(halfBarX, segmentTop, halfBarWidth, segmentHeight);
-                                    ctx.restore();
-                                    
-                                    currentY = segmentTop;
                                 }
                             });
                         }
                     };
-                    
-                    Chart.register(halfWidthLastBarPlugin);
-                    window._halfWidthPluginRegistered = true;
-                    console.log('Half-width last bar plugin registered');
+
+                    Chart.register(hidePseudoBarPlugin);
+                    window._hidePseudoBarPluginRegistered = true;
+                    console.log('Hide pseudo bar plugin registered');
                 }
 
                 // Create chart
@@ -876,25 +829,25 @@
                     console.log(`Now line timer (gen ${generation}): stale, current is ${window._chartGeneration[role]}`);
                     return;
                 }
-                
+
                 if (document.hidden) return;
-                
+
                 // Get current expected date
                 const expectedDate = window.getHelsinkiDate ? window.getHelsinkiDate(0) : null;
-                
+
                 // If date has changed, don't update - let the refresh handle it
                 if (expectedDate && chartDate !== expectedDate) {
                     console.log('Now line timer: date changed, skipping update');
                     return;
                 }
-                
+
                 // Verify the chart canvas still matches our generation
                 const canvas = document.querySelector('#todayChart canvas');
                 if (!canvas || canvas._chartGeneration !== generation) {
                     console.log(`Now line timer (gen ${generation}): canvas generation mismatch`);
                     return;
                 }
-                
+
                 // Use global updateNowLine which reads from data store
                 if (window.updateNowLine) {
                     window.updateNowLine();
@@ -917,19 +870,19 @@
                     console.log(`Now line timer (gen ${generation}): not scheduling, already stale`);
                     return;
                 }
-                
+
                 const ms = msUntilNext15Min();
                 console.log(`Now line timer (gen ${generation}): scheduling for ${ms}ms`);
-                
+
                 const timeoutId = setTimeout(() => {
                     // Check generation before doing anything
                     if (window._chartGeneration[role] !== generation) {
                         console.log(`Now line timer (gen ${generation}): timeout fired but stale`);
                         return;
                     }
-                    
+
                     updateNowLineFromStore();
-                    
+
                     // Only set up interval if still current generation
                     if (window._chartGeneration[role] === generation) {
                         const intervalId = setInterval(() => {
@@ -940,13 +893,13 @@
                             }
                             updateNowLineFromStore();
                         }, 15 * 60 * 1000);
-                        
+
                         if (window.chartRegistry) {
                             window.chartRegistry.trackTimer(intervalId, role, 'now-line-interval');
                         }
                     }
                 }, ms);
-                
+
                 if (window.chartRegistry) {
                     window.chartRegistry.trackTimer(timeoutId, role, 'now-line-timeout');
                 }
