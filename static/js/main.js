@@ -762,7 +762,12 @@
 
         const validData = storeData.data;
         const granularity = storeData.granularity || 'quarter_hour';
-        const priceRange = storeData.priceRange || { minPrice: 0, maxPrice: 15 };
+        
+        // Use global price range instead of local chart range
+        // This ensures the now line always spans the full height like the gridlines
+        const globalPriceRange = window.globalPriceRange || { minPrice: 0, maxPrice: 15 };
+        const minPrice = globalPriceRange.minPrice !== null ? globalPriceRange.minPrice : 0;
+        const maxPrice = globalPriceRange.maxPrice !== null ? globalPriceRange.maxPrice : 15;
 
         // Validate chart instance
         try {
@@ -796,8 +801,8 @@
                     type: 'line',
                     xMin: dataPointIndex,
                     xMax: dataPointIndex,
-                    yMin: priceRange.minPrice,
-                    yMax: priceRange.maxPrice,
+                    yMin: minPrice,
+                    yMax: maxPrice,
                     borderColor: 'rgba(255, 153, 0, 0.9)',
                     borderWidth: 3,
                     borderDash: [4, 3],
