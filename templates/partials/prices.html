@@ -354,14 +354,37 @@
                                     if (chartInstance.options.plugins && chartInstance.options.plugins.annotation) {
                                         const annotations = chartInstance.options.plugins.annotation.annotations;
                                         if (annotations) {
+                                            // Remove old horizontal gridlines
+                                            Object.keys(annotations).forEach(key => {
+                                                if (key.startsWith('hline_')) {
+                                                    delete annotations[key];
+                                                }
+                                            });
+                                            
+                                            // Add horizontal gridlines for the new global range
+                                            for (let price = globalMin; price <= globalMax; price += 1) {
+                                                const isMajor = price % 5 === 0;
+                                                annotations[`hline_${price}`] = {
+                                                    type: 'line',
+                                                    yMin: price,
+                                                    yMax: price,
+                                                    xMin: 0,
+                                                    xMax: chartInstance.data.labels.length > 0 ? chartInstance.data.labels.length - 1 : 0,
+                                                    borderColor: isMajor ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.15)',
+                                                    borderWidth: isMajor ? 2 : 1.5,
+                                                    drawTime: 'beforeDatasetsDraw',
+                                                    xScaleID: 'x',
+                                                    yScaleID: 'y'
+                                                };
+                                            }
+                                            
+                                            // Update vertical lines to span full height
                                             Object.keys(annotations).forEach(key => {
                                                 const ann = annotations[key];
-                                                // Update vertical lines to span full height
                                                 if (key.startsWith('vline_') || key.startsWith('nowline')) {
                                                     if (ann.yMin !== undefined) ann.yMin = globalMin;
                                                     if (ann.yMax !== undefined) ann.yMax = globalMax;
                                                 }
-                                                // Horizontal lines don't need update as they are at fixed Y values
                                             });
                                         }
                                     }
