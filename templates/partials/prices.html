@@ -738,7 +738,7 @@
                 // Add hour labels
                 chart.canvas.parentElement.style.position = 'relative';
                 const labelContainer = document.createElement('div');
-                labelContainer.style.cssText = 'position: absolute; bottom: 0; left: 0; right: 0; height: 30px; pointer-events: none;';
+                labelContainer.style.cssText = 'position: absolute; bottom: 0; left: 0; right: 0; height: 50px; pointer-events: none;';
                 labelContainer.className = 'chart-hour-labels';
                 chart.canvas.parentElement.appendChild(labelContainer);
 
@@ -756,6 +756,36 @@
                     // Check if mobile vertical mode (mobile width AND portrait orientation)
                     const isMobileVertical = isMobile && window.innerHeight > window.innerWidth;
 
+                    // Calculate current time for relative labels (works for both today and tomorrow)
+                    const now = new Date();
+                    const currentHour = now.getHours();
+                    const currentMinutes = now.getMinutes();
+                    const currentQuarter = Math.floor(currentMinutes / 15);
+                    const currentIntervalIndex = currentHour * 4 + currentQuarter;
+
+                    // For today's chart: find current position in data
+                    // For tomorrow's chart: calculate offset from midnight
+                    let currentDataPointIndex = null;
+                    let chartStartHour = 0;
+                    let chartStartMinutes = 0;
+
+                    if (role === 'today') {
+                        // Find current time position in today's data
+                        currentDataPointIndex = validData.findIndex(row => {
+                            const intervalIndex = parseInt(row[0]);
+                            return intervalIndex === currentIntervalIndex;
+                        });
+                    } else if (role === 'tomorrow') {
+                        // For tomorrow, calculate how many hours from now until tomorrow at the same minute
+                        // If current time is 15:30, tomorrow at 0:30 is 9 hours away
+                        const hoursUntilTomorrow = 24 - currentHour;
+                        const minutesUntilTomorrow = hoursUntilTomorrow * 60 - currentMinutes;
+                        // The first relative label in tomorrow's chart should be at 0:currentMinutes
+                        chartStartHour = 0;
+                        chartStartMinutes = currentMinutes;
+                    }
+
+                    // Draw absolute hour labels (restore original position)
                     for (let hour = 0; hour < 24; hour++) {
                         // On mobile vertical mode, only show every 2nd hour (0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22)
                         if (isMobileVertical && hour % 2 !== 0) {
@@ -771,12 +801,137 @@
                                 const barWidth = categoryWidth * barPercentage;
                                 const leftEdge = xPos - (barWidth / 2);
 
+                                // Hour label (absolute hour) - restore original position at bottom: 5px
                                 const label = document.createElement('div');
                                 label.textContent = hour.toString();
                                 label.style.cssText = `position: absolute; left: ${leftEdge}px; bottom: 5px; color: white; font-size: 12px; font-family: Arial, sans-serif; pointer-events: none; white-space: nowrap;`;
                                 labelContainer.appendChild(label);
                             } catch (e) {
                                 console.warn('Error positioning hour label:', e);
+                            }
+                        }
+                    }
+
+                    // Draw relative hour labels (+1, +2, +3, etc.) positioned relative to now line
+                    if (role === 'today' && currentDataPointIndex !== null && currentDataPointIndex >= 0) {
+                        // Calculate current time position in pixels
+                        const nowXPos = scale.getPixelForValue(currentDataPointIndex);
+
+                        // Draw labels for each hour after current time
+                        // Start from +1 (1 hour after current time)
+                        for (let relativeHour = 1; relativeHour <= 48; relativeHour++) { // Up to 48 hours ahead
+                            // Calculate target time: current time + relativeHour hours
+                            const targetTotalMinutes = currentMinutes + (relativeHour * 60);
+                            const targetHours = currentHour + Math.floor(targetTotalMinutes / 60);
+                            const targetMinutes = targetTotalMinutes % 60;
+                            const targetHour = targetHours % 24;
+
+                            // Check if this is still within today (before midnight)
+                            if (targetHours >= 24) {
+                                break; // Beyond today, stop here
+                            }
+
+                            // Calculate interval index for target time
+                            const targetQuarter = Math.floor(targetMinutes / 15);
+                            const targetIntervalIndex = targetHour * 4 + targetQuarter;
+
+                            // Find data point index
+                            const targetDataPointIndex = validData.findIndex(row => {
+                                const intervalIndex = parseInt(row[0]);
+                                return intervalIndex === targetIntervalIndex;
+                            });
+
+                            if (targetDataPointIndex >= 0 && targetDataPointIndex < validData.length) {
+                                try {
+                                    const xPos = scale.getPixelForValue(targetDataPointIndex);
+                                    const barPercentage = (isMobile || isTablet) ? 0.95 : 0.90;
+                                    const categoryWidth = scale.width / labels.length;
+                                    const barWidth = categoryWidth * barPercentage;
+                                    const leftEdge = xPos - (barWidth / 2);
+
+                                    const relativeLabel = document.createElement('div');
+                                    relativeLabel.textContent = `+${relativeHour}`;
+                                    relativeLabel.style.cssText = `position: absolute; left: ${leftEdge}px; bottom: -15px; color: rgba(255, 255, 255, 0.7); font-size: 11px; font-family: Arial, sans-serif; pointer-events: none; white-space: nowrap;`;
+                                    labelContainer.appendChild(relativeLabel);
+                                } catch (e) {
+                                    console.warn('Error positioning relative hour label:', e);
+                                }
+                            } else {
+                                // No more data available
+                                break;
+                            }
+                        }
+                    } else if (role === 'tomorrow') {
+                        // For tomorrow's chart, continue from where today left off
+                        // Calculate how many hours from now until tomorrow at the same minute
+                        // If current time is 15:30, tomorrow at 0:30 is 9 hours away, so label it +9
+                        // Time until midnight: (24 - currentHour) hours
+                        // Time from midnight to 0:currentMinutes: currentMinutes (already included in the hour calculation)
+                        // So total hours = 24 - currentHour
+                        // But we need to account for the minutes: if it's 15:30, time to 0:30 is exactly 9 hours
+                        // If it's 15:00, time to 0:00 is 9 hours, but we want 0:currentMinutes which would be 0:00 = 9 hours
+                        // Actually, if current is 15:00 and we want 0:00, that's 9 hours. If current is 15:30 and we want 0:30, that's also 9 hours.
+                        // So firstRelativeHour = 24 - currentHour (always, since we're going to the same minute)
+                        const firstRelativeHour = 24 - currentHour;
+
+                        // Start labeling from tomorrow at the same minute as current time
+                        const startHour = 0;
+                        const startMinutes = currentMinutes;
+                        const startQuarter = Math.floor(startMinutes / 15);
+                        const startIntervalIndex = startHour * 4 + startQuarter;
+
+                        // Find starting position in tomorrow's data
+                        const startDataPointIndex = validData.findIndex(row => {
+                            const intervalIndex = parseInt(row[0]);
+                            return intervalIndex === startIntervalIndex;
+                        });
+
+                        if (startDataPointIndex >= 0) {
+                            // Draw labels starting from firstRelativeHour
+                            // Continue for up to 24 more hours (full day)
+                            for (let offset = 0; offset < 24; offset++) {
+                                const relativeHour = firstRelativeHour + offset;
+
+                                // Calculate target time in tomorrow: start time + offset hours
+                                const targetTotalMinutes = startMinutes + (offset * 60);
+                                const targetHours = startHour + Math.floor(targetTotalMinutes / 60);
+                                const targetMinutes = targetTotalMinutes % 60;
+                                const targetHour = targetHours % 24;
+
+                                // Check if still within tomorrow (before next day)
+                                if (targetHours >= 24) {
+                                    break;
+                                }
+
+                                // Calculate interval index for target time
+                                const targetQuarter = Math.floor(targetMinutes / 15);
+                                const targetIntervalIndex = targetHour * 4 + targetQuarter;
+
+                                // Find data point index
+                                const targetDataPointIndex = validData.findIndex(row => {
+                                    const intervalIndex = parseInt(row[0]);
+                                    return intervalIndex === targetIntervalIndex;
+                                });
+
+                                if (targetDataPointIndex >= 0 && targetDataPointIndex < validData.length) {
+                                    try {
+                                        const xPos = scale.getPixelForValue(targetDataPointIndex);
+                                        const barPercentage = (isMobile || isTablet) ? 0.95 : 0.90;
+                                        const categoryWidth = scale.width / labels.length;
+                                        const barWidth = categoryWidth * barPercentage;
+                                        const leftEdge = xPos - (barWidth / 2);
+
+                                        const relativeLabel = document.createElement('div');
+                                        relativeLabel.textContent = `+${relativeHour}`;
+                                        relativeLabel.style.cssText = `position: absolute; left: ${leftEdge}px; bottom: -15px; color: rgba(255, 255, 255, 0.7); font-size: 11px; font-family: Arial, sans-serif; pointer-events: none; white-space: nowrap;`;
+                                        labelContainer.appendChild(relativeLabel);
+                                    } catch (e) {
+                                        console.warn('Error positioning relative hour label:', e);
+                                    }
+                                } else {
+                                    // No more data available
+                                    break;
+                                }
                             }
                         }
                     }
@@ -803,6 +958,7 @@
                 chartElement._chartDate = date;  // Store the date this chart was created for
                 chartElement._chartRole = role;
                 chartElement._chartGeneration = thisGeneration;  // Store generation for timer validation
+                chartElement._updateHourLabels = updateHourLabels;  // Store function reference for updating labels
 
                 // Set up now line timer for today's chart
                 if (role === 'today') {
@@ -851,6 +1007,26 @@
                 // Use global updateNowLine which reads from data store
                 if (window.updateNowLine) {
                     window.updateNowLine();
+                }
+
+                // Update hour labels for both today and tomorrow charts
+                // This ensures relative labels (+1, +2, etc.) are repositioned when now line moves
+                const todayCanvas = document.querySelector('#todayChart canvas');
+                if (todayCanvas && todayCanvas._updateHourLabels) {
+                    try {
+                        todayCanvas._updateHourLabels();
+                    } catch (e) {
+                        console.warn('Error updating today chart hour labels:', e);
+                    }
+                }
+
+                const tomorrowCanvas = document.querySelector('#tomorrowChart canvas');
+                if (tomorrowCanvas && tomorrowCanvas._updateHourLabels) {
+                    try {
+                        tomorrowCanvas._updateHourLabels();
+                    } catch (e) {
+                        console.warn('Error updating tomorrow chart hour labels:', e);
+                    }
                 }
             }
 
