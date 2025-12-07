@@ -753,6 +753,16 @@
                         return;
                     }
 
+                    // Helper to measure the width of a "+" character
+                    function measurePlusWidth() {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        ctx.font = '11px Arial, sans-serif';
+                        return ctx.measureText('+').width;
+                    }
+
+                    const plusCharWidth = measurePlusWidth();
+
                     // Check if mobile vertical mode (mobile width AND portrait orientation)
                     const isMobileVertical = isMobile && window.innerHeight > window.innerWidth;
 
@@ -847,7 +857,7 @@
                                     const barPercentage = (isMobile || isTablet) ? 0.95 : 0.90;
                                     const categoryWidth = scale.width / labels.length;
                                     const barWidth = categoryWidth * barPercentage;
-                                    const leftEdge = xPos - (barWidth / 2);
+                                    const leftEdge = xPos - (barWidth / 2) - plusCharWidth;
 
                                     const relativeLabel = document.createElement('div');
                                     relativeLabel.textContent = `+${relativeHour}`;
@@ -919,7 +929,7 @@
                                         const barPercentage = (isMobile || isTablet) ? 0.95 : 0.90;
                                         const categoryWidth = scale.width / labels.length;
                                         const barWidth = categoryWidth * barPercentage;
-                                        const leftEdge = xPos - (barWidth / 2);
+                                        const leftEdge = xPos - (barWidth / 2) - plusCharWidth;
 
                                         const relativeLabel = document.createElement('div');
                                         relativeLabel.textContent = `+${relativeHour}`;
