@@ -454,6 +454,13 @@
         // Run orphan cleanup after swap
         setTimeout(() => {
             window.chartRegistry.cleanupOrphaned();
+            // Update now line, current price, and hour labels after chart swap completes
+            // This ensures they're correct after a refresh
+            if (!document.hidden) {
+                window.updateNowLine();
+                window.updateCurrentPrice();
+                updateHourLabels();
+            }
         }, 100);
     });
 
@@ -891,6 +898,22 @@
     };
 
     /**
+     * Update hour labels for all charts
+     */
+    function updateHourLabels() {
+        ['today', 'tomorrow'].forEach(role => {
+            const canvas = d.querySelector(`#${role}Chart canvas`);
+            if (isElementValid(canvas) && canvas._updateHourLabels) {
+                try {
+                    canvas._updateHourLabels();
+                } catch (e) {
+                    console.warn(`Error updating ${role} chart hour labels:`, e);
+                }
+            }
+        });
+    }
+
+    /**
      * Redraw existing charts (for window resize or screen re-enablement)
      */
     window.redrawCharts = function () {
@@ -912,6 +935,8 @@
                     }
                 }
             });
+            // Update hour labels after redraw
+            updateHourLabels();
         });
     };
 
@@ -1009,6 +1034,14 @@
                 }
             });
 
+            // Always update now line, current price, and hour labels when screen comes back on
+            // This ensures the position is correct even if the screen was off for a while
+            setTimeout(() => {
+                window.updateNowLine();
+                window.updateCurrentPrice();
+                updateHourLabels();
+            }, 100);
+
             if (!needsRefresh) {
                 // Data is valid, verify chart canvas generations match store dates
                 const todayCanvas = d.querySelector('#todayChart canvas');
@@ -1030,6 +1063,7 @@
                     // Everything valid, just redraw
                     setTimeout(() => {
                         window.redrawCharts();
+                        // Update now line and price again after redraw to ensure they're correct
                         window.updateNowLine();
                         window.updateCurrentPrice();
                     }, 100);
