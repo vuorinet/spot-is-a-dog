@@ -1078,7 +1078,7 @@
 
             if (data.version && data.version !== currentVersion) {
                 console.log('New version detected via fetch:', data.version);
-                showUpdateToast();
+                location.reload();
             }
         } catch (e) {
             console.warn('Version check error:', e.message);
@@ -1094,7 +1094,7 @@
 
         if (serverVersion && serverVersion !== currentVersion) {
             console.log('New version available:', serverVersion);
-            showUpdateToast();
+            location.reload();
         }
     }
 
