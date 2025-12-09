@@ -890,15 +890,23 @@
                         const startQuarter = Math.floor(startMinutes / 15);
                         const startIntervalIndex = startHour * 4 + startQuarter;
 
+                        // Only draw labels if we have data for tomorrow
                         // Find starting position in tomorrow's data
                         const startDataPointIndex = validData.findIndex(row => {
                             const intervalIndex = parseInt(row[0]);
                             return intervalIndex === startIntervalIndex;
                         });
 
-                        if (startDataPointIndex >= 0) {
+                        // Only draw relative hour labels if we have data available
+                        if (startDataPointIndex >= 0 && validData.length > 0) {
+                            // Find the maximum interval index in validData to know where data ends
+                            const maxIntervalIndex = Math.max(...validData.map(row => {
+                                if (!Array.isArray(row) || row.length < 1) return -1;
+                                return parseInt(row[0]) || -1;
+                            }));
+
                             // Draw labels starting from firstRelativeHour
-                            // Continue for up to 24 more hours (full day)
+                            // Continue for up to 24 more hours (full day), but stop when we run out of data
                             for (let offset = 0; offset < 24; offset++) {
                                 const relativeHour = firstRelativeHour + offset;
 
@@ -913,33 +921,63 @@
                                     break;
                                 }
 
-                                // Calculate interval index for target time
-                                const targetQuarter = Math.floor(targetMinutes / 15);
-                                const targetIntervalIndex = targetHour * 4 + targetQuarter;
+                                // For relative hour labels, we show them at the start of each hour (interval index divisible by 4)
+                                // Calculate interval index for the start of this hour (at :00 minutes)
+                                const targetIntervalIndex = targetHour * 4;
 
-                                // Find data point index
-                                const targetDataPointIndex = validData.findIndex(row => {
+                                // Check if this hour's start interval is within available data
+                                // The hour is valid if its start interval (targetIntervalIndex) is <= maxIntervalIndex
+                                // This ensures we only draw labels for hours that have data
+                                if (targetIntervalIndex > maxIntervalIndex) {
+                                    // This hour is beyond available data, stop drawing labels
+                                    break;
+                                }
+
+                                // Check if the hour start interval exists in validData
+                                // This is the same check used to determine if price data is available
+                                const hourStartExists = validData.some(row => {
+                                    if (!Array.isArray(row) || row.length !== 5) return false;
                                     const intervalIndex = parseInt(row[0]);
                                     return intervalIndex === targetIntervalIndex;
                                 });
 
-                                if (targetDataPointIndex >= 0 && targetDataPointIndex < validData.length) {
-                                    try {
-                                        const xPos = scale.getPixelForValue(targetDataPointIndex);
-                                        const barPercentage = (isMobile || isTablet) ? 0.95 : 0.90;
-                                        const categoryWidth = scale.width / labels.length;
-                                        const barWidth = categoryWidth * barPercentage;
-                                        const leftEdge = xPos - (barWidth / 2) - plusCharWidth;
+                                // Only draw label if the hour start exists in data
+                                // This ensures we only show labels for hours that have actual price data
+                                if (hourStartExists) {
+                                    // Find the first interval of this hour in validData to position the label
+                                    const hourStartDataPointIndex = validData.findIndex(row => {
+                                        const intervalIndex = parseInt(row[0]);
+                                        return intervalIndex === targetIntervalIndex;
+                                    });
 
-                                        const relativeLabel = document.createElement('div');
-                                        relativeLabel.textContent = `+${relativeHour}`;
-                                        relativeLabel.style.cssText = `position: absolute; left: ${leftEdge}px; bottom: -15px; color: rgba(255, 255, 255, 0.7); font-size: 11px; font-family: Arial, sans-serif; pointer-events: none; white-space: nowrap;`;
-                                        labelContainer.appendChild(relativeLabel);
-                                    } catch (e) {
-                                        console.warn('Error positioning relative hour label:', e);
+                                    // If hour start exists, use it; otherwise use first interval of this hour
+                                    let labelDataPointIndex = hourStartDataPointIndex;
+                                    if (labelDataPointIndex < 0) {
+                                        // Hour start not found, find first interval of this hour
+                                        labelDataPointIndex = validData.findIndex(row => {
+                                            const intervalIndex = parseInt(row[0]);
+                                            return intervalIndex >= targetIntervalIndex && intervalIndex < targetIntervalIndex + 4;
+                                        });
+                                    }
+
+                                    if (labelDataPointIndex >= 0 && labelDataPointIndex < validData.length) {
+                                        try {
+                                            const xPos = scale.getPixelForValue(labelDataPointIndex);
+                                            const barPercentage = (isMobile || isTablet) ? 0.95 : 0.90;
+                                            const categoryWidth = scale.width / labels.length;
+                                            const barWidth = categoryWidth * barPercentage;
+                                            const leftEdge = xPos - (barWidth / 2) - plusCharWidth;
+
+                                            const relativeLabel = document.createElement('div');
+                                            relativeLabel.textContent = `+${relativeHour}`;
+                                            relativeLabel.style.cssText = `position: absolute; left: ${leftEdge}px; bottom: -15px; color: rgba(255, 255, 255, 0.7); font-size: 11px; font-family: Arial, sans-serif; pointer-events: none; white-space: nowrap;`;
+                                            labelContainer.appendChild(relativeLabel);
+                                        } catch (e) {
+                                            console.warn('Error positioning relative hour label:', e);
+                                        }
                                     }
                                 } else {
-                                    // No more data available
+                                    // No data available for this hour, stop drawing labels
                                     break;
                                 }
                             }

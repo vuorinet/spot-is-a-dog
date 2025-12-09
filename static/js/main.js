@@ -980,6 +980,22 @@
     );
 
     // ============================================================================
+    // PERIODIC NOW LINE UPDATE WHEN VISIBLE (fallback for missed screen wake events)
+    // ============================================================================
+
+    // Update now line and price every minute when page is visible
+    // This catches cases where screen wake events don't fire on Android/Samsung devices
+    window.chartRegistry.trackTimer(
+        setInterval(() => {
+            if (!document.hidden) {
+                window.updateNowLine();
+                window.updateCurrentPrice();
+            }
+        }, ONE_MINUTE),
+        'global', 'periodic-now-line-update'
+    );
+
+    // ============================================================================
     // VISIBILITY CHANGE - WITH DATE VALIDATION
     // ============================================================================
 
@@ -1036,6 +1052,10 @@
 
             // Always update now line, current price, and hour labels when screen comes back on
             // This ensures the position is correct even if the screen was off for a while
+            // Update immediately first, then also after a short delay to catch any timing issues
+            window.updateNowLine();
+            window.updateCurrentPrice();
+            updateHourLabels();
             setTimeout(() => {
                 window.updateNowLine();
                 window.updateCurrentPrice();
@@ -1376,8 +1396,32 @@
         });
     }
 
+    // Function to immediately update now line and price when screen wakes
+    function handleScreenWake() {
+        console.log('Screen wake detected, immediately updating now line and price...');
+        // Update immediately without delay
+        window.updateNowLine();
+        window.updateCurrentPrice();
+        updateHourLabels();
+        // Also redraw charts after a short delay to ensure everything is in sync
+        setTimeout(() => {
+            window.redrawCharts();
+        }, 50);
+    }
+
     let resizeTimeout = null;
+    let lastResizeTime = 0;
     window.chartRegistry.trackEventListener(window, 'resize', () => {
+        const now = Date.now();
+        // If it's been more than 1 second since last resize, this might be a screen wake
+        // On Android/Samsung tablets, screen wake can trigger resize events
+        if (now - lastResizeTime > 1000) {
+            console.log('Resize after potential screen wake, updating now line and price...');
+            handleScreenWake();
+            lastResizeTime = now;
+        }
+        
+        // Also handle normal resize with debouncing
         if (resizeTimeout) clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
             window.redrawCharts();
@@ -1394,8 +1438,9 @@
     });
 
     window.chartRegistry.trackEventListener(window, 'focus', () => {
-        // Just redraw, visibility handler will validate data
-        setTimeout(() => window.redrawCharts(), 100);
+        console.log('Window focused, updating now line and price...');
+        // Immediately update when window regains focus (screen wake on Android/Samsung)
+        handleScreenWake();
     });
 
     window.chartRegistry.trackEventListener(d, 'keydown', (event) => {
