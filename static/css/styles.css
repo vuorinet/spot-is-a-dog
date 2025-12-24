@@ -53,6 +53,8 @@ body {
     margin-right: 8px;
 }
 
+/* Christmas hat is now part of the image file (spot-192-christmas.png) */
+
 .header-left h1 .header-icon,
 .header-left .header-icon {
     height: 4em !important;

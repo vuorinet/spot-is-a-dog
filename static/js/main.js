@@ -1485,6 +1485,37 @@
             void dogIconWrapper.offsetWidth;
             dogIconWrapper.classList.add('fart-animate');
         });
+
+        // ============================================================================
+        // CHRISTMAS HAT (TONTTULAKKI) - Dec 24-26 (Helsinki time)
+        // ============================================================================
+        function updateChristmasHat() {
+            // Use Helsinki timezone for consistency with the rest of the app
+            const now = new Date();
+            const helsinkiTime = new Date(now.toLocaleString('en-US', { timeZone: HELSINKI_TZ }));
+            const month = helsinkiTime.getMonth(); // 0-11, December is 11
+            const day = helsinkiTime.getDate(); // 1-31
+            
+            // Check if it's December 24, 25, or 26 in Helsinki time
+            const isChristmas = month === 11 && (day === 24 || day === 25 || day === 26);
+            
+            if (isChristmas) {
+                // Use Christmas version of the icon
+                dogIcon.src = '/static/spot-192-christmas.png';
+            } else {
+                // Use regular version
+                dogIcon.src = '/static/spot-192.png';
+            }
+        }
+        
+        // Update hat on page load
+        updateChristmasHat();
+        
+        // Update hat periodically (every hour) in case date changes while page is open
+        window.chartRegistry.trackTimer(
+            setInterval(updateChristmasHat, 60 * 60 * 1000),
+            'global', 'christmas-hat-update'
+        );
     }
 
     console.log('Spot is a Dog - Frontend initialized');
