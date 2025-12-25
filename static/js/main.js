@@ -695,8 +695,14 @@
             setInterval(() => {
                 const hour = getHelsinkiHour();
                 if (hour >= 14 && hour < 15) {
-                    console.log('Afternoon polling: checking for tomorrow\'s prices');
-                    refreshChart('tomorrow');
+                    // Check if tomorrow's data is already current before refreshing
+                    if (isChartDataCurrent('tomorrow')) {
+                        console.log('Afternoon polling: tomorrow\'s data is already current, stopping polling');
+                        stopAfternoonPolling();
+                    } else {
+                        console.log('Afternoon polling: checking for tomorrow\'s prices');
+                        refreshChart('tomorrow');
+                    }
                 } else {
                     stopAfternoonPolling();
                 }
