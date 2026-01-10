@@ -645,6 +645,98 @@
         return true;
     }
 
+    /**
+     * Check if we have a full day of prices (96 intervals for quarter-hour data)
+     * Returns true if we have at least 90 valid intervals (allowing for some missing data)
+     * Only checks data for the expected date
+     */
+    function hasFullDayPrices(role) {
+        const expectedDate = getExpectedDate(role);
+        const storeData = window.chartDataStore.getData(role, expectedDate);
+        if (!storeData || !storeData.data || storeData.data.length === 0) {
+            return false;
+        }
+
+        // Verify the date matches
+        if (storeData.date !== expectedDate) {
+            return false;
+        }
+
+        // Count valid data rows (rows with actual prices)
+        const validData = storeData.data.filter(row => {
+            if (!Array.isArray(row) || row.length !== 5) return false;
+            const [, lowPrice, mediumPrice, highPrice, marginPrice] = row;
+            const hasValidPrice = [lowPrice, mediumPrice, highPrice, marginPrice].some(
+                price => typeof price === 'number' && !isNaN(price) && isFinite(price) && price !== 0
+            );
+            return hasValidPrice;
+        });
+
+        // For quarter-hour granularity, we expect 96 intervals (24 hours * 4)
+        // Consider it a full day if we have at least 90 valid intervals (94% of intervals)
+        const expectedIntervals = 96;
+        const minRequired = Math.floor(expectedIntervals * 0.94); // 94% of intervals
+        return validData.length >= minRequired;
+    }
+
+    /**
+     * Compare two data arrays to check if they're different
+     * Returns true if data has changed
+     * Exposed globally for use in templates
+     */
+    window.hasDataChanged = function (oldData, newData) {
+        if (!oldData && !newData) return false;
+        if (!oldData || !newData) return true;
+        if (!Array.isArray(oldData) || !Array.isArray(newData)) return true;
+        if (oldData.length !== newData.length) return true;
+
+        // Deep comparison of data rows
+        for (let i = 0; i < oldData.length; i++) {
+            const oldRow = oldData[i];
+            const newRow = newData[i];
+            
+            if (!Array.isArray(oldRow) || !Array.isArray(newRow)) return true;
+            if (oldRow.length !== newRow.length) return true;
+
+            // Compare price values (indices 1-4: low, med, high, margin)
+            for (let j = 1; j < Math.min(oldRow.length, newRow.length); j++) {
+                const oldVal = oldRow[j];
+                const newVal = newRow[j];
+                if (oldVal !== newVal) {
+                    // Handle NaN and null cases
+                    if ((isNaN(oldVal) && isNaN(newVal)) || (oldVal === null && newVal === null)) {
+                        continue;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    };
+
+    /**
+     * Check if chart data has changed before refreshing
+     * Returns true if refresh is needed, false if data is the same
+     */
+    function shouldRefreshChart(role, newData) {
+        const expectedDate = getExpectedDate(role);
+        const storeData = window.chartDataStore.getData(role, expectedDate);
+        
+        // If no existing data, we need to refresh
+        if (!storeData || !storeData.data || storeData.data.length === 0) {
+            return true;
+        }
+
+        // If date changed, we need to refresh
+        if (storeData.date !== expectedDate) {
+            return true;
+        }
+
+        // Check if data has actually changed
+        return hasDataChanged(storeData.data, newData);
+    }
+
     // ============================================================================
     // MIDNIGHT TRANSITION AND DATE VALIDATION
     // ============================================================================
@@ -658,10 +750,15 @@
             console.log(`Midnight transition detected: ${currentDate} -> ${newDate}`);
             currentDate = newDate;
 
-            // Clear ALL stale data
+            // Clear ALL stale data - this ensures charts will redraw because:
+            // 1. refreshChart() clears the store for each role
+            // 2. When new data arrives, getData() will return null (no existing data)
+            // 3. The data change check in prices.html will see no existing data and redraw
+            // This is correct behavior: at midnight, tomorrow's data becomes today's data, so redraw IS needed
             window.chartDataStore.clearAll();
 
             // Refresh both charts with new dates
+            // This will trigger redraws because the store was cleared above
             refreshChart('today');
             
             // Small delay for tomorrow to avoid race conditions
@@ -678,39 +775,75 @@
     );
 
     // ============================================================================
-    // AFTERNOON POLLING (14:00-14:30 Helsinki time)
+    // INTELLIGENT POLLING SYSTEM
     // ============================================================================
+
+    const FIVE_MINUTES = 5 * 60 * 1000;
+    const ONE_HOUR = 60 * 60 * 1000;
 
     let afternoonPollingActive = false;
     let afternoonPollingTimer = null;
     let afternoonWindowCheckTimer = null;
+    let extendedPollingActive = false;
+    let extendedPollingTimer = null;
+    let hourlyPollingActive = false;
+    let hourlyPollingTimer = null;
+    let hourlyPollingRole = null; // Track which role we're polling for
 
+    /**
+     * Get current Helsinki time (hour and minute)
+     */
+    function getHelsinkiTime() {
+        const now = new Date();
+        const helsinkiTime = new Date(now.toLocaleString('en-US', { timeZone: HELSINKI_TZ }));
+        return {
+            hour: helsinkiTime.getHours(),
+            minute: helsinkiTime.getMinutes()
+        };
+    }
+
+    /**
+     * Start afternoon polling (14:00-14:30) - 1 minute intervals
+     * This polls specifically for TOMORROW's prices
+     */
     function startAfternoonPolling() {
         if (afternoonPollingActive) return;
 
-        console.log('Starting afternoon polling for tomorrow\'s prices');
+        console.log('Starting afternoon polling for TOMORROW\'s prices (1 minute intervals)');
         afternoonPollingActive = true;
 
         afternoonPollingTimer = window.chartRegistry.trackTimer(
             setInterval(() => {
-                const hour = getHelsinkiHour();
-                if (hour >= 14 && hour < 15) {
-                    // Check if tomorrow's data is already current before refreshing
-                    if (isChartDataCurrent('tomorrow')) {
-                        console.log('Afternoon polling: tomorrow\'s data is already current, stopping polling');
-                        stopAfternoonPolling();
-                    } else {
-                        console.log('Afternoon polling: checking for tomorrow\'s prices');
-                        refreshChart('tomorrow');
-                    }
-                } else {
+                const time = getHelsinkiTime();
+                
+                // Stop if we're past 14:30
+                if (time.hour > 14 || (time.hour === 14 && time.minute >= 30)) {
                     stopAfternoonPolling();
+                    // If we still don't have full day prices for TOMORROW, start extended polling
+                    if (!hasFullDayPrices('tomorrow')) {
+                        startExtendedPolling();
+                    }
+                    return;
                 }
+
+                // Check if we have full day prices for TOMORROW
+                if (hasFullDayPrices('tomorrow')) {
+                    console.log('Afternoon polling: TOMORROW\'s full day prices received, stopping polling');
+                    stopAfternoonPolling();
+                    return;
+                }
+
+                // Poll for TOMORROW's prices
+                console.log('Afternoon polling: checking for TOMORROW\'s prices');
+                refreshChartIfNeeded('tomorrow');
             }, ONE_MINUTE),
             'global', 'afternoon-polling'
         );
     }
 
+    /**
+     * Stop afternoon polling
+     */
     function stopAfternoonPolling() {
         if (!afternoonPollingActive) return;
 
@@ -723,20 +856,184 @@
         }
     }
 
-    function checkAfternoonWindow() {
-        const hour = getHelsinkiHour();
-        if (hour >= 14 && hour < 15) {
-            startAfternoonPolling();
-        } else {
-            stopAfternoonPolling();
+    /**
+     * Start extended polling (14:30-15:00) - 5 minute intervals
+     * This polls specifically for TOMORROW's prices
+     */
+    function startExtendedPolling() {
+        if (extendedPollingActive) return;
+
+        console.log('Starting extended polling for TOMORROW\'s prices (5 minute intervals)');
+        extendedPollingActive = true;
+
+        extendedPollingTimer = window.chartRegistry.trackTimer(
+            setInterval(() => {
+                const time = getHelsinkiTime();
+                
+                // Stop if we're past 15:00
+                if (time.hour >= 15) {
+                    stopExtendedPolling();
+                    // If we still don't have full day prices for TOMORROW, start hourly polling
+                    if (!hasFullDayPrices('tomorrow')) {
+                        startHourlyPolling('tomorrow');
+                    }
+                    return;
+                }
+
+                // Check if we have full day prices for TOMORROW
+                if (hasFullDayPrices('tomorrow')) {
+                    console.log('Extended polling: TOMORROW\'s full day prices received, stopping polling');
+                    stopExtendedPolling();
+                    return;
+                }
+
+                // Poll for TOMORROW's prices
+                console.log('Extended polling: checking for TOMORROW\'s prices');
+                refreshChartIfNeeded('tomorrow');
+            }, FIVE_MINUTES),
+            'global', 'extended-polling'
+        );
+    }
+
+    /**
+     * Stop extended polling
+     */
+    function stopExtendedPolling() {
+        if (!extendedPollingActive) return;
+
+        console.log('Stopping extended polling');
+        extendedPollingActive = false;
+
+        if (extendedPollingTimer) {
+            window.chartRegistry.clearTimer(extendedPollingTimer);
+            extendedPollingTimer = null;
         }
     }
 
+    /**
+     * Start hourly polling for missing prices
+     * @param {string} role - 'today' or 'tomorrow'
+     */
+    function startHourlyPolling(role) {
+        // If already polling for a different role, stop first
+        if (hourlyPollingActive && hourlyPollingRole !== role) {
+            stopHourlyPolling();
+        }
+        if (hourlyPollingActive) return;
+
+        console.log(`Starting hourly polling for ${role}'s prices`);
+        hourlyPollingActive = true;
+        hourlyPollingRole = role;
+
+        hourlyPollingTimer = window.chartRegistry.trackTimer(
+            setInterval(() => {
+                // Check if we now have full day prices for the role we're polling
+                if (hasFullDayPrices(hourlyPollingRole)) {
+                    console.log(`Hourly polling: ${hourlyPollingRole} full day prices received, stopping polling`);
+                    stopHourlyPolling();
+                    return;
+                }
+
+                // Poll for prices
+                console.log(`Hourly polling: checking for ${hourlyPollingRole}'s prices`);
+                refreshChartIfNeeded(hourlyPollingRole);
+            }, ONE_HOUR),
+            'global', 'hourly-polling'
+        );
+    }
+
+    /**
+     * Stop hourly polling
+     */
+    function stopHourlyPolling() {
+        if (!hourlyPollingActive) return;
+
+        console.log(`Stopping hourly polling for ${hourlyPollingRole || 'unknown'}`);
+        hourlyPollingActive = false;
+        hourlyPollingRole = null;
+
+        if (hourlyPollingTimer) {
+            window.chartRegistry.clearTimer(hourlyPollingTimer);
+            hourlyPollingTimer = null;
+        }
+    }
+
+    /**
+     * Refresh chart only if data has changed
+     */
+    function refreshChartIfNeeded(role) {
+        // We'll check for data changes after fetching, but trigger the refresh
+        // The actual data comparison happens in the chart creation callback
+        refreshChart(role);
+    }
+
+    /**
+     * Check and manage polling based on current time
+     */
+    function checkPollingSchedule() {
+        const time = getHelsinkiTime();
+        const hour = time.hour;
+        const minute = time.minute;
+
+        // Afternoon polling window (14:00-14:30)
+        if (hour === 14 && minute >= 0 && minute < 30) {
+            if (!afternoonPollingActive && !hasFullDayPrices('tomorrow')) {
+                startAfternoonPolling();
+            }
+            // Stop extended and hourly polling if they're active
+            if (extendedPollingActive) stopExtendedPolling();
+            if (hourlyPollingActive) stopHourlyPolling();
+        }
+        // Extended polling window (14:30-15:00)
+        else if (hour === 14 && minute >= 30) {
+            if (!extendedPollingActive && !hasFullDayPrices('tomorrow')) {
+                startExtendedPolling();
+            }
+            // Stop afternoon and hourly polling if they're active
+            if (afternoonPollingActive) stopAfternoonPolling();
+            if (hourlyPollingActive) stopHourlyPolling();
+        }
+        // Evening/Night (15:00-24:00) - hourly polling for tomorrow if missing
+        else if (hour >= 15) {
+            if (!hourlyPollingActive && !hasFullDayPrices('tomorrow')) {
+                startHourlyPolling('tomorrow');
+            }
+            // Stop afternoon and extended polling if they're active
+            if (afternoonPollingActive) stopAfternoonPolling();
+            if (extendedPollingActive) stopExtendedPolling();
+        }
+        // Morning (0:00-14:00) - hourly polling for today if missing
+        else if (hour < 14) {
+            if (!hourlyPollingActive && !hasFullDayPrices('today')) {
+                startHourlyPolling('today');
+            }
+            // Stop afternoon and extended polling if they're active
+            if (afternoonPollingActive) stopAfternoonPolling();
+            if (extendedPollingActive) stopExtendedPolling();
+        }
+
+        // Always stop polling if we have full day prices
+        if (hasFullDayPrices('tomorrow')) {
+            if (afternoonPollingActive) stopAfternoonPolling();
+            if (extendedPollingActive) stopExtendedPolling();
+            if (hourlyPollingActive && hourlyPollingRole === 'tomorrow') {
+                stopHourlyPolling();
+            }
+        }
+        if (hasFullDayPrices('today')) {
+            if (hourlyPollingActive && hourlyPollingRole === 'today') {
+                stopHourlyPolling();
+            }
+        }
+    }
+
+    // Check polling schedule every minute
     afternoonWindowCheckTimer = window.chartRegistry.trackTimer(
-        setInterval(checkAfternoonWindow, ONE_MINUTE),
-        'global', 'afternoon-window-check'
+        setInterval(checkPollingSchedule, ONE_MINUTE),
+        'global', 'polling-schedule-check'
     );
-    checkAfternoonWindow();
+    // Initial check
+    checkPollingSchedule();
 
     // ============================================================================
     // NOW LINE UPDATE (uses data store, not canvas properties)

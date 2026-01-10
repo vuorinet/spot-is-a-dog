@@ -407,6 +407,31 @@
                 const minPrice = window.globalPriceRange.minPrice;
                 const priceRange = { minPrice, maxPrice };
 
+                // Check if data has actually changed before updating store and redrawing
+                // Note: At midnight, when tomorrow becomes today, the date changes, so existingData
+                // will be null (because getData checks date match), and dataChanged will be true,
+                // ensuring the chart redraws correctly.
+                let dataChanged = true;
+                if (window.chartDataStore && typeof window.hasDataChanged === 'function') {
+                    const existingData = window.chartDataStore.getData(role, date);
+                    if (existingData && existingData.data) {
+                        // Only check for data changes if we have existing data for the same date
+                        // If date changed (e.g., at midnight), existingData will be null, so we'll redraw
+                        dataChanged = window.hasDataChanged(existingData.data, validData);
+                        if (!dataChanged) {
+                            console.log(`Chart ${role}: data unchanged for date ${date}, skipping redraw`);
+                            // Still update the store with current timestamp to mark it as fresh
+                            window.chartDataStore.setData(role, date, validData, granularity, priceRange);
+                            return; // Exit early, don't redraw chart
+                        } else {
+                            console.log(`Chart ${role}: data changed for date ${date}, will redraw`);
+                        }
+                    } else {
+                        // No existing data or date mismatch - must redraw (e.g., at midnight transition)
+                        console.log(`Chart ${role}: no existing data or date changed, will redraw`);
+                    }
+                }
+
                 if (window.chartDataStore) {
                     window.chartDataStore.setData(role, date, validData, granularity, priceRange);
                 }
