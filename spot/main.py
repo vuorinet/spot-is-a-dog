@@ -481,9 +481,9 @@ def create_app() -> FastAPI:
             logger.debug("Cache already warm, serving page immediately")
 
         return templates.TemplateResponse(
+            request,
             "index.html",
             {
-                "request": request,
                 "app_name": "Spot is a dog",
                 "margin_cents": margin,
                 "app_version": os.environ.get("SPOT_VERSION", "dev"),
@@ -808,9 +808,9 @@ def create_app() -> FastAPI:
         granularity = metadata.granularity if metadata else DEFAULT_GRANULARITY
         vm = build_view_model(filtered_intervals, margin_cents, granularity)
         return templates.TemplateResponse(
+            request,
             "partials/prices.html",
             {
-                "request": request,
                 "vm": vm,
                 "chart_role": role,
                 "chart_date_iso": target.isoformat(),
