@@ -322,7 +322,8 @@ def create_app() -> FastAPI:
             },
         )
 
-    from .entsoe import DataNotAvailable, fetch_day_ahead_prices
+    from .entsoe import DataNotAvailable
+    from .price_source import fetch_day_ahead_prices
 
     async def fetch_prices_for_day(target_date: date) -> DayPrices:
         logger.info(
