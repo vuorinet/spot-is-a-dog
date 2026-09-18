@@ -276,12 +276,55 @@ async def _fetch_with_resolution(
             r = await client.get(ENTSOE_BASE_URL, params=params)
         r.raise_for_status()
         try:
-            return parse_publication_xml(r.content)
+            result = parse_publication_xml(r.content)
         except DataNotAvailable as e:
             # Log a short snippet for diagnostics
             snippet = r.content[:200].decode(errors="ignore")
             logger.info("ENTSO-E data not available: %s | body: %s", e, snippet)
             raise
+
+    return _filter_to_requested_window(result, period_start, period_end)
+
+
+def _filter_to_requested_window(
+    result: DaySeries,
+    period_start: datetime,
+    period_end: datetime,
+) -> DaySeries:
+    """Drop any point ENTSO-E returned outside the requested window.
+
+    Before a day-ahead auction is published, ENTSO-E doesn't always return
+    a clean "no data" acknowledgement for the requested window - it can
+    instead return HTTP 200 with a TimeSeries for a different (typically
+    the prior, already-published) CET-aligned day that merely overlaps the
+    requested UTC window by an hour or so. Left unfiltered, those
+    out-of-window points would get mislabeled as belonging to the
+    requested day.
+
+    It's normal for the *remaining* result to only cover part of the day -
+    resolution and boundary handling differ by source, and a day can be
+    published incrementally - so this only drops points outside the
+    window, it does not require a full day. price_source.py merges across
+    ENTSO-E, Elering and Nord Pool to fill in whatever's missing.
+    """
+    in_window = [p for p in result.points if period_start <= p.start_utc < period_end]
+
+    if not in_window:
+        msg = (
+            f"ENTSO-E returned no data overlapping the requested period "
+            f"[{period_start.isoformat()}, {period_end.isoformat()})"
+        )
+        raise DataNotAvailable(msg)
+
+    if len(in_window) == len(result.points):
+        return result
+
+    return DaySeries(
+        market=result.market,
+        granularity=result.granularity,
+        points=in_window,
+        published_at_utc=result.published_at_utc,
+    )
 
 
 def get_prices(

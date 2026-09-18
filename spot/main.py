@@ -90,7 +90,13 @@ class Cache:
         self.intervals = [
             it for it in self.intervals if _local_date(it.start_utc) != target_date
         ]
-        self.intervals.extend(day_prices.intervals)
+        # Defense in depth: only accept intervals that actually belong to
+        # target_date. A source returning a stray interval for a
+        # neighbouring day (e.g. a boundary quarter-hour) should never
+        # pollute another day's cached entries.
+        self.intervals.extend(
+            it for it in day_prices.intervals if _local_date(it.start_utc) == target_date
+        )
         self.intervals.sort(key=lambda it: it.start_utc)
         self.day_metadata[target_date] = _metadata_from_day_prices(
             day_prices,
